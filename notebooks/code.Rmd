@@ -1,0 +1,3536 @@
+---
+title: "code"
+output: html_document
+date: "2026-02-25"
+---
+
+```{r}
+# Helper function to install CRAN packages if not already installed
+install_if_missing <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg, dependencies = TRUE)
+  }
+}
+
+# List of CRAN packages
+cran_packages <- c(
+  "plyr", "doBy", "survival", "coin", "ggplot2", "lattice", "hexbin",
+  "randomForest", "ggthemes", "reshape2", "ca", "FactoMineR", "MASS", "grid",
+  "missMDA", "plotrix", "stats", "gdata", "psych", "corrplot", "scales",
+  "RColorBrewer", "plotly", "ggsignif", "vegan", "gplots", "ggpubr",
+  "dplyr", "tidyr"
+)
+
+# Install CRAN packages
+lapply(cran_packages, install_if_missing)
+
+# Install 'heatmap.2' (part of gplots, already included above)
+
+# Install devtools if not present
+install_if_missing("devtools")
+library(devtools)
+
+# Install RCM package from GitHub
+if (!requireNamespace("RCM", quietly = TRUE)) {
+  devtools::install_github("CenterForStatistics-UGent/RCM")
+}
+library(RCM)
+cat("RCM package version", as.character(packageVersion("RCM")), "\n")
+
+# Install BiocManager if needed, then use it to install phyloseq
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+if (!requireNamespace("phyloseq", quietly = TRUE)) {
+  BiocManager::install("phyloseq")
+}
+library(phyloseq)
+
+# Load all packages
+lapply(c(cran_packages, "RCM", "phyloseq"), library, character.only = TRUE)
+
+```
+
+
+
+```{r}
+### Load packages
+library(plyr)
+library(doBy)
+library(survival)
+library(coin)
+library(ggplot2)
+library(lattice)
+library(hexbin)
+library(randomForest)
+library(ggthemes)
+library(reshape2)
+library(ca)
+library(FactoMineR)
+library(MASS)
+library(grid)
+library(missMDA)
+library(plotrix)
+library(stats)
+library(gdata)
+library(psych)
+library(corrplot)
+library(scales)
+library(RColorBrewer)
+library(plotly)
+library(ggsignif)
+library(vegan)
+library(plyr)
+library(gplots)
+library(devtools)
+library(RCM)
+library(phyloseq)
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(readr)
+library(purrr)
+library(tidyverse)
+library(ggcorrplot)
+library(lme4)
+library(lmerTest) # for p-values in lmer
+library(dplyr)
+
+```
+
+
+
+```{r}
+Shiseido_metadata_3 <- read.csv("../data/Shiseido_metadata_2.tsv", header=TRUE, sep="\t", stringsAsFactors=FALSE)
+### Import exported dataframe
+Shiseidodf <- read.csv("../data/Shiseidodfc.txt", header=TRUE, sep="\t", stringsAsFactors=FALSE)
+alpha1 <- read_tsv("../output/alpha_diversity/217014_alpha-diversity.tsv", col_types = cols())
+alpha2 <- read_tsv("../output/alpha_diversity/217015_alpha-diversity.tsv", col_types = cols())
+# Step 2: Combine alpha diversity tables
+alpha_combined <- full_join(alpha1, alpha2, by = "#SampleID")
+
+# Join using SampleID_2 in metadata and #SampleID in alpha
+merged_metadata_2 <- Shiseido_metadata_3 %>%
+  left_join(alpha_combined, by = c("SampleID_2" = "#SampleID"))
+
+
+merged_metadata_2 <- merge(
+  merged_metadata_2,
+  Shiseidodf[, c("X.SampleID", "Face_site")],
+  by.x = "SampleID_2",
+  by.y = "X.SampleID",
+  all.x = TRUE  # keep all rows from merged_metadata_2
+)
+
+
+# Add new column with only the part before the dash
+merged_metadata_2$Subject_ID <- sub("-.*", "", merged_metadata_2$microbiome_ID)
+
+
+Shiseido_metadata <- merged_metadata_2
+```
+
+
+```{r}
+
+fill_colors <- c(
+  "Forehead" = "#ffc65e",   # warm amber
+  "Nose"     = "#5693c7",   # soft blue
+  "Cheek"    = "#8ccd87",   # light green
+  "Ear"      = "#9dcfcf",   # muted teal (cooler, pairs with Nose & Cheek)
+  "Temple"   = "#f29d1e",   # bold warm orange (near Forehead)
+  "Chin"     = "#bfa6d0",   # lavender (softer contrast after orange)
+  "Neck"     = "#d3d3d3"    # neutral gray (least visually dominant, good for last)
+)
+
+border_colors <- c(
+  "Forehead" = "#e0a846",  # darker amber
+  "Nose"     = "#3a6b99",  # darker blue
+  "Cheek"    = "#4a7a4f",  # deeper green
+  "Ear"      = "#6ca5a5",  # darker teal
+  "Temple"   = "#c97e0f",  # deeper warm orange
+  "Chin"     = "#9989ac",  # deeper lavender
+  "Neck"     = "#a9a9a9"   # medium gray
+)
+```
+
+
+# Figure 2 
+
+
+```{r}
+library(dplyr)
+library(lme4)
+library(lmerTest)
+library(ggplot2)
+library(ggpubr)
+library(emmeans)
+library(car)
+library(broom)
+
+# ── Shared themes ─────────────────────────────────────────────────────────────
+shared_theme_bw <- theme_bw(base_size = 12) +
+  theme(
+    panel.grid       = element_blank(),
+    axis.title       = element_text(size = 14),
+    axis.text        = element_text(size = 12),
+    plot.title       = element_text(size = 15, hjust = 0.5),
+    legend.position  = "bottom",
+    legend.title     = element_text(size = 12),
+    legend.text      = element_text(size = 12),
+    legend.key.size  = unit(0.8, "cm"),
+    legend.spacing.x = unit(0.4, "cm")
+  )
+
+shared_theme_minimal <- theme_minimal(base_size = 12) +
+  theme(
+    panel.grid       = element_blank(),
+    axis.line        = element_line(color = "black"),
+    axis.ticks       = element_line(color = "black"),
+    axis.title       = element_text(size = 14),
+    axis.text        = element_text(size = 12),
+    plot.title       = element_text(size = 15, hjust = 0.5),
+    legend.position  = "bottom",
+    legend.title     = element_text(size = 12),
+    legend.text      = element_text(size = 12),
+    legend.key.size  = unit(0.8, "cm"),
+    legend.spacing.x = unit(0.4, "cm")
+  )
+
+# ── Shared helper functions ───────────────────────────────────────────────────
+# Build x-axis labels with sample counts
+make_x_labels <- function(df, group_var) {
+  df %>%
+    group_by(across(all_of(group_var))) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    mutate(label = paste0(.data[[group_var]], "\n(n=", n, ")")) %>%
+    { setNames(.$label, .[[group_var]]) }
+}
+
+make_legend_labels <- function(df, group_var) {
+  df %>%
+    count(.data[[group_var]]) %>%
+    mutate(label = paste0(.data[[group_var]], " (n = ", n, ")")) %>%
+    { setNames(.$label, .[[group_var]]) }
+}
+# Get pairwise label regardless of group order
+get_label <- function(g1, g2, df) {
+  row <- df[(df$Group1 == g1 & df$Group2 == g2) | (df$Group1 == g2 & df$Group2 == g1), ]
+  if (nrow(row) == 1) row$label else NA
+}
+
+# Build annotation df for 3-group pairwise (Forehead/Nose/Cheek)
+make_annotation_df <- function(wilcox_df, y_positions, y_max) {
+  data.frame(
+    x    = c("Forehead", "Nose",  "Forehead"),
+    xend = c("Nose",     "Cheek", "Cheek"),
+    label = c(
+      get_label("Forehead", "Nose",  wilcox_df),
+      get_label("Nose",     "Cheek", wilcox_df),
+      get_label("Forehead", "Cheek", wilcox_df)
+    ),
+    y = y_max * y_positions
+  ) %>%
+    mutate(
+      x_num    = match(x,    c("Forehead", "Nose", "Cheek")),
+      xend_num = match(xend, c("Forehead", "Nose", "Cheek")),
+      xmid     = (x_num + xend_num) / 2
+    )
+}
+
+# Run Kruskal-Wallis + pairwise Wilcoxon, return tidy annotation df
+run_nonparam_tests <- function(df, value_var, y_positions) {
+  kruskal.test(reformulate("Face_site", value_var), data = df)
+
+  wilcox_df <- pairwise.wilcox.test(
+    df[[value_var]], df$Face_site, p.adjust.method = "BH"
+  ) %>%
+    broom::tidy() %>%
+    rename(Group1 = group1, Group2 = group2, p_adj = p.value) %>%
+    mutate(
+      signif = case_when(
+        p_adj < 0.001 ~ "***", p_adj < 0.01 ~ "**",
+        p_adj < 0.05  ~ "*",  TRUE           ~ "ns"
+      ),
+      label = paste0(signif, " p = ", formatC(p_adj, format = "e", digits = 2))
+    )
+
+  make_annotation_df(wilcox_df, y_positions, max(df[[value_var]], na.rm = TRUE))
+}
+
+# ── Prepare base data ─────────────────────────────────────────────────────────
+prep_avg <- function(var) {
+  Shiseido_metadata %>%
+    filter(Face_site %in% c("Forehead", "Nose", "Cheek")) %>%
+    mutate(
+      !!var := as.numeric(.data[[var]]),
+      Subject_ID = as.factor(Subject_ID),
+      Face_site  = factor(Face_site, levels = c("Forehead", "Nose", "Cheek"))
+    ) %>%
+    filter(!is.na(.data[[var]])) %>%
+    group_by(Subject_ID, Face_site) %>%
+    summarise(across(all_of(var), \(x) mean(x, na.rm = TRUE)), .groups = "drop")
+}
+
+# ── Plot a: Skin Redness (a*) ─────────────────────────────────────────────────
+df_a    <- prep_avg("a")
+x_labels_a <- make_x_labels(df_a, "Face_site")
+
+model_aov_a <- aov(a ~ Face_site, data = df_a)
+tukey_a <- TukeyHSD(model_aov_a)$Face_site %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Comparison") %>%
+  mutate(
+    signif = case_when(
+      `p adj` < 0.001 ~ "***", `p adj` < 0.01 ~ "**",
+      `p adj` < 0.05  ~ "*",  TRUE             ~ "ns"
+    ),
+    label = paste0(signif, " p = ", formatC(`p adj`, format = "e", digits = 2))
+  )
+
+annot_a <- data.frame(
+  x    = c("Forehead", "Nose",  "Forehead"),
+  xend = c("Nose",     "Cheek", "Cheek"),
+  y    = c(16.0, 15.0, 15.5),
+  label = tukey_a$label[match(
+    c("Nose-Forehead", "Cheek-Nose", "Cheek-Forehead"), tukey_a$Comparison)]
+) %>% mutate(
+  x_num = match(x, c("Forehead","Nose","Cheek")),
+  xend_num = match(xend, c("Forehead","Nose","Cheek")),
+  xmid = (x_num + xend_num) / 2
+)
+
+Skin_Redness <- ggplot(df_a, aes(x = Face_site, y = a, fill = Face_site, color = Face_site)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(pch = 21, position = position_jitterdodge(jitter.width = 1.5),
+             size = 1.5, stroke = 0.3, alpha = 0.6) +
+  scale_fill_manual(values = fill_colors,    name = "Face Site") +
+  scale_color_manual(values = border_colors, name = "Face Site") +
+  scale_x_discrete(labels = x_labels_a) +
+  labs(y = "Skin Redness (a*)", x = NULL) +
+  shared_theme_bw +
+  geom_segment(data = annot_a, aes(x = x, xend = xend, y = y, yend = y),
+               inherit.aes = FALSE, color = "black") +
+  geom_text(data = annot_a, aes(x = xmid, y = y + 0.2, label = label),
+            inherit.aes = FALSE, size = 4)
+
+# ── Plot b: Skin Brightness (L*) ──────────────────────────────────────────────
+df_L    <- prep_avg("L")
+x_labels_L <- make_x_labels(df_L, "Face_site")
+
+model_aov_L <- aov(L ~ Face_site, data = df_L)
+tukey_L <- TukeyHSD(model_aov_L)$Face_site %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Comparison") %>%
+  mutate(
+    signif = case_when(
+      `p adj` < 0.001 ~ "***", `p adj` < 0.01 ~ "**",
+      `p adj` < 0.05  ~ "*",  TRUE             ~ "ns"
+    ),
+    label = paste0(signif, " p = ", formatC(`p adj`, format = "e", digits = 2))
+  )
+
+annot_L <- data.frame(
+  x    = c("Forehead", "Nose",  "Forehead"),
+  xend = c("Nose",     "Cheek", "Cheek"),
+  y    = c(74.0, 72.0, 73.0),
+  label = tukey_L$label[match(
+    c("Nose-Forehead", "Cheek-Nose", "Cheek-Forehead"), tukey_L$Comparison)]
+) %>% mutate(
+  x_num = match(x, c("Forehead","Nose","Cheek")),
+  xend_num = match(xend, c("Forehead","Nose","Cheek")),
+  xmid = (x_num + xend_num) / 2
+)
+
+Skin_Brightness <- ggplot(df_L, aes(x = Face_site, y = L, fill = Face_site, color = Face_site)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(pch = 21, position = position_jitterdodge(jitter.width = 1.5),
+             size = 1.5, stroke = 0.3, alpha = 0.6) +
+  scale_fill_manual(values = fill_colors,    name = "Face Site") +
+  scale_color_manual(values = border_colors, name = "Face Site") +
+  scale_x_discrete(labels = x_labels_L) +
+  labs(y = "Skin Brightness (L*)", x = NULL) +
+  shared_theme_bw +
+  geom_segment(data = annot_L, aes(x = x, xend = xend, y = y, yend = y),
+               inherit.aes = FALSE, color = "black") +
+  geom_text(data = annot_L, aes(x = xmid, y = y + 0.4, label = label),
+            inherit.aes = FALSE, size = 4)
+
+# ── Plot c: Sebum content ─────────────────────────────────────────────────────
+df_sebum    <- prep_avg("sebum")
+x_labels_sebum <- make_x_labels(df_sebum, "Face_site")
+annot_sebum <- run_nonparam_tests(df_sebum, "sebum", c(1.04, 0.92, 0.98))
+
+Skin_Sebum_subset <- ggplot(df_sebum, aes(x = Face_site, y = sebum, fill = Face_site, color = Face_site)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(pch = 21, position = position_jitterdodge(jitter.width = 1.5),
+             size = 1.5, stroke = 0.3, alpha = 0.6) +
+  scale_fill_manual(values = fill_colors,    name = "Face Site") +
+  scale_color_manual(values = border_colors, name = "Face Site") +
+  scale_x_discrete(labels = x_labels_sebum) +
+  labs(y = expression("Sebum content (" * mu * "g/cm"^2 * ")"), x = NULL) +
+  shared_theme_bw +
+  geom_segment(data = annot_sebum, aes(x = x, xend = xend, y = y, yend = y),
+               inherit.aes = FALSE, color = "black") +
+  geom_text(data = annot_sebum,
+            aes(x = xmid, y = y + 0.025 * max(df_sebum$sebum, na.rm = TRUE), label = label),
+            inherit.aes = FALSE, size = 4)
+
+# ── Plot d: Skin Temperature ──────────────────────────────────────────────────
+df_temp <- Shiseido_metadata %>%
+  filter(Face_site %in% c("Forehead", "Nose", "Cheek"), !is.na(skin_temparature)) %>%
+  mutate(Subject_ID = as.factor(Subject_ID),
+         Face_site  = factor(Face_site, levels = c("Forehead", "Nose", "Cheek"))) %>%
+  group_by(Subject_ID, Face_site) %>%
+  summarise(skin_temparature = mean(skin_temparature, na.rm = TRUE), .groups = "drop")
+
+x_labels_temp <- make_x_labels(df_temp, "Face_site")
+annot_temp    <- run_nonparam_tests(df_temp, "skin_temparature", c(1.02, 1.00, 1.01))
+
+Skin_Temp <- ggplot(df_temp, aes(x = Face_site, y = skin_temparature, fill = Face_site, color = Face_site)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(pch = 21, position = position_jitterdodge(jitter.width = 1.5),
+             size = 1.5, stroke = 0.3, alpha = 0.6) +
+  scale_fill_manual(values = fill_colors,    name = "Face Site") +
+  scale_color_manual(values = border_colors, name = "Face Site") +
+  scale_x_discrete(labels = x_labels_temp) +
+  labs(y = "Skin Temperature (ºC)", x = NULL) +
+  shared_theme_bw +
+  geom_segment(data = annot_temp, aes(x = x, xend = xend, y = y, yend = y),
+               inherit.aes = FALSE, color = "black") +
+  geom_text(data = annot_temp,
+            aes(x = xmid, y = y + 0.0025 * max(df_temp$skin_temparature, na.rm = TRUE), label = label),
+            inherit.aes = FALSE, size = 4)
+
+# ── Plot e: Water Content ─────────────────────────────────────────────────────
+df_water <- Shiseido_metadata %>%
+  filter(Face_site %in% c("Forehead", "Nose", "Cheek"), !is.na(water_content)) %>%
+  mutate(Subject_ID = as.factor(Subject_ID),
+         Face_site  = factor(Face_site, levels = c("Forehead", "Nose", "Cheek"))) %>%
+  group_by(Subject_ID, Face_site) %>%
+  summarise(water_content = mean(water_content, na.rm = TRUE), .groups = "drop")
+
+x_labels_water <- make_x_labels(df_water, "Face_site")
+annot_water    <- run_nonparam_tests(df_water, "water_content", c(1.10, 1.00, 1.05))
+
+Skin_WaterContent <- ggplot(df_water, aes(x = Face_site, y = water_content, fill = Face_site, color = Face_site)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(pch = 21, position = position_jitterdodge(jitter.width = 1.5),
+             size = 1.5, stroke = 0.3, alpha = 0.6) +
+  scale_fill_manual(values = fill_colors,    name = "Face Site") +
+  scale_color_manual(values = border_colors, name = "Face Site") +
+  scale_x_discrete(labels = x_labels_water) +
+  labs(y = "Water Content (a.u.)", x = NULL) +
+  shared_theme_bw +
+  geom_segment(data = annot_water, aes(x = x, xend = xend, y = y, yend = y),
+               inherit.aes = FALSE, color = "black") +
+  geom_text(data = annot_water,
+            aes(x = xmid, y = y + 0.03 * max(df_water$water_content, na.rm = TRUE), label = label),
+            inherit.aes = FALSE, size = 4)
+
+# ── Helper: LMM scatter plot ──────────────────────────────────────────────────
+make_lmm_scatter <- function(df, x_var, y_var, x_lab, y_lab, title) {
+  model  <- lmer(reformulate(c(x_var, "Face_site", "(1 | Subject_ID)"), y_var), data = df)
+  smry   <- summary(model)$coefficients
+  cor_text <- paste0("β = ", round(smry[x_var, "Estimate"], 2),
+                     ", p = ", signif(smry[x_var, "Pr(>|t|)"], 2))
+  leg_labels <- make_legend_labels(df, "Face_site")
+
+  ggplot(df, aes(x = .data[[x_var]], y = .data[[y_var]])) +
+    geom_point(aes(fill = Face_site, color = Face_site),
+               shape = 21, size = 3, alpha = 0.6, stroke = 0.6) +
+    geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.7) +
+    annotate("text", x = Inf, y = Inf, label = cor_text,
+             hjust = 1.1, vjust = 1.5, size = 4) +
+    scale_fill_manual(values = fill_colors,    labels = leg_labels, name = "Face Site") +
+    scale_color_manual(values = border_colors, labels = leg_labels, name = "Face Site") +
+    labs(x = x_lab, y = y_lab, title = title) +
+    shared_theme_minimal
+}
+
+# ── Plots f–h: LMM scatter plots ─────────────────────────────────────────────
+df_La <- Shiseido_metadata %>%
+  mutate(L = as.numeric(L), a = as.numeric(a),
+         Subject_ID = as.factor(Subject_ID), Face_site = as.factor(Face_site)) %>%
+  filter(!is.na(L), !is.na(a)) %>%
+  group_by(Subject_ID, Face_site) %>%
+  summarise(mean_L = mean(L, na.rm = TRUE), mean_a = mean(a, na.rm = TRUE), .groups = "drop")
+
+df_sebum_a <- Shiseido_metadata %>%
+  mutate(sebum = as.numeric(sebum), a = as.numeric(a),
+         Subject_ID = as.factor(Subject_ID), Face_site = as.factor(Face_site)) %>%
+  filter(!is.na(sebum), !is.na(a)) %>%
+  group_by(Subject_ID, Face_site) %>%
+  summarise(mean_sebum = mean(sebum, na.rm = TRUE), mean_a = mean(a, na.rm = TRUE), .groups = "drop")
+
+df_sebum_L <- Shiseido_metadata %>%
+  mutate(sebum = as.numeric(sebum), L = as.numeric(L),
+         Subject_ID = as.factor(Subject_ID), Face_site = as.factor(Face_site)) %>%
+  filter(!is.na(sebum), !is.na(L)) %>%
+  group_by(Subject_ID, Face_site) %>%
+  summarise(mean_sebum = mean(sebum, na.rm = TRUE), mean_L = mean(L, na.rm = TRUE), .groups = "drop")
+
+e_LM_avg <- make_lmm_scatter(df_La, "mean_L", "mean_a",
+  "Skin Brightness (L*)", "Skin Redness (a*)",
+  "Association between skin brightness and redness")
+
+skinredness_sebum_LM_avg <- make_lmm_scatter(df_sebum_a, "mean_sebum", "mean_a",
+  "Sebum content (µg/cm²)", "Skin Redness (a*)",
+  "Association between sebum content and skin redness")
+
+skinbrightness_sebum_LM_avg <- make_lmm_scatter(df_sebum_L, "mean_sebum", "mean_L",
+  "Sebum content (µg/cm²)", "Skin Brightness (L*)",
+  "Association between sebum content and skin brightness")
+
+# ── Plot i: Sebum by Subject (Kruskal-Wallis) ─────────────────────────────────
+metadata_with_runorder <- read.csv("../data/metadata_with_runorder_050132025.csv")
+
+q           <- quantile(metadata_with_runorder$sebum, probs = c(0.25, 0.75), na.rm = TRUE)
+low_thresh  <- q[1]; high_thresh <- q[2]
+
+df_avg_sebum <- metadata_with_runorder %>%
+  filter(!is.na(Subject_ID), !is.na(sebum),
+         Face_site %in% c("Forehead", "Nose", "Cheek")) %>%
+  mutate(Subject_ID = as.factor(Subject_ID), Face_site = as.factor(Face_site)) %>%
+  group_by(Subject_ID, Face_site) %>%
+  summarise(sebum = mean(sebum, na.rm = TRUE), .groups = "drop")
+
+subject_median_info <- df_avg_sebum %>%
+  group_by(Subject_ID) %>%
+  summarise(median_sebum = median(sebum, na.rm = TRUE)) %>%
+  mutate(sebum_group_median = case_when(
+    median_sebum < low_thresh  ~ "low",
+    median_sebum > high_thresh ~ "high",
+    TRUE                       ~ "medium"
+  ))
+
+df_avg_sebum <- df_avg_sebum %>%
+  left_join(subject_median_info, by = "Subject_ID") %>%
+  mutate(
+    sebum_group_median = factor(sebum_group_median, levels = c("low", "medium", "high")),
+    Subject_ID = factor(Subject_ID,
+      levels = subject_median_info %>% arrange(median_sebum) %>% pull(Subject_ID))
+  )
+
+kw_p <- kruskal.test(sebum ~ Subject_ID, data = df_avg_sebum)$p.value
+
+group_counts  <- df_avg_sebum %>%
+  group_by(sebum_group_median) %>% summarise(n = n()) %>%
+  mutate(label = case_when(
+    sebum_group_median == "low"    ~ paste0("Low (< ", low_thresh,  " µg/cm²) (n=", n, ")"),
+    sebum_group_median == "medium" ~ paste0("Medium (", low_thresh, "–", high_thresh, " µg/cm²) (n=", n, ")"),
+    sebum_group_median == "high"   ~ paste0("High (> ", high_thresh," µg/cm²) (n=", n, ")")
+  ))
+legend_labels <- setNames(group_counts$label, group_counts$sebum_group_median)
+
+Skin_Sebum_KW_subjects <- ggplot(df_avg_sebum,
+    aes(y = sebum, x = Subject_ID, fill = sebum_group_median, color = sebum_group_median)) +
+  geom_boxplot(outlier.shape = NA, color = "black") +
+  geom_point(pch = 21, position = position_jitterdodge(jitter.width = 0.5),
+             size = 1.5, stroke = 0.3, alpha = 0.6, color = "black") +
+  scale_fill_manual(values  = c("low" = "#4575b4", "medium" = "#fee0b6", "high" = "#e08214"),
+                    name    = "Sebum Group (Median)", labels = legend_labels) +
+  scale_color_manual(values = c("low" = "#4575b4", "medium" = "#fee0b6", "high" = "#e08214"),
+                     guide  = "none") +
+  scale_y_log10() +
+  labs(y = expression("Sebum content (" * mu * "g/cm"^2 * ")"), x = "Subject ID") +
+  shared_theme_bw +
+  theme(axis.text.x = element_text(size = 10, angle = 45, hjust = 1)) +
+  annotate("text", x = 7, y = Inf,
+           label = paste0("Kruskal-Wallis, p = ", format(kw_p, digits = 3, scientific = TRUE)),
+           vjust = 1.5, size = 4)
+
+# ── Assemble Figure 2 ─────────────────────────────────────────────────────────
+boxplot_fg <- ggarrange(
+  Skin_Redness, Skin_Brightness, Skin_Sebum_subset, Skin_Temp, Skin_WaterContent,
+  ncol = 5, labels = c("a","b","c","d","e"),
+  common.legend = TRUE, legend = "bottom",
+  font.label = list(size = 18, face = "bold")
+)
+
+corrplot <- ggarrange(
+  e_LM_avg, skinredness_sebum_LM_avg, skinbrightness_sebum_LM_avg,
+  ncol = 3, labels = c("f","g","h"),
+  common.legend = TRUE, legend = "bottom",
+  font.label = list(size = 18, face = "bold")
+)
+
+top_grid <- ggarrange(
+  boxplot_fg, corrplot, Skin_Sebum_KW_subjects,
+  ncol = 1, nrow = 3,
+  labels = c("", "", "i"),
+  heights = c(1, 1, 0.75),
+  font.label = list(size = 18, face = "bold")
+)
+
+
+```
+
+```{r}
+# ── Save ──────────────────────────────────────────────────────────────────────
+ggsave("../figures/main/Figure2.png", plot = top_grid, width = 17, height = 14, dpi = 300)
+ggsave("../figures/main/Figure2.svg", plot = top_grid, width = 17, height = 14)
+```
+
+# Figure 3
+
+
+```{r}
+# ── Shared theme ──────────────────────────────────────────────────────────────
+shared_theme <- theme_minimal(base_size = 12) +
+  theme(
+    panel.grid       = element_blank(),
+    axis.line        = element_line(color = "black"),
+    axis.ticks       = element_line(color = "black"),
+    axis.title       = element_text(size = 14),
+    axis.text        = element_text(size = 12),
+    plot.title       = element_text(size = 15, hjust = 0.5),
+    legend.position  = "bottom",
+    legend.title     = element_text(size = 12),
+    legend.text      = element_text(size = 12),
+    legend.key.size  = unit(0.8, "cm"),
+    legend.spacing.x = unit(0.4, "cm")
+  )
+
+# ── Prepare data ──────────────────────────────────────────────────────────────
+df_lmm <- Shiseido_metadata %>%
+  filter(Face_site %in% c("Forehead", "Nose", "Cheek"),
+         !is.na(shannon_entropy),
+         Subject_ID != "na") %>%
+  mutate(
+    Subject_ID = as.factor(Subject_ID),
+    Face_site  = factor(Face_site, levels = c("Forehead", "Nose", "Cheek"))
+  )
+
+# ── x-axis labels with counts (for boxplot) ───────────────────────────────────
+x_labels <- df_lmm %>%
+  group_by(Face_site) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(label = paste0(Face_site, "\n(n=", n, ")")) %>%
+  with(setNames(label, Face_site))
+
+# ── Legend labels with counts (for scatter plot) ──────────────────────────────
+site_counts      <- table(df_lmm$Face_site)
+face_site_labels <- setNames(
+  paste0(names(site_counts), " (n=", site_counts, ")"),
+  names(site_counts)
+)
+
+# ── LMM: Shannon entropy ~ Face site ─────────────────────────────────────────
+model_lmm <- lmer(shannon_entropy ~ Face_site + (1 | Subject_ID), data = df_lmm)
+anova(model_lmm)
+
+pairwise_df <- pairs(emmeans(model_lmm, ~ Face_site), adjust = "BH") %>%
+  as.data.frame() %>%
+  mutate(
+    Group1  = sub(" - .*", "", contrast),
+    Group2  = sub(".*- ",  "", contrast),
+    signif  = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    ),
+    label = paste0(signif, " p = ", formatC(p.value, format = "e", digits = 2)),
+    x     = match(Group1, levels(df_lmm$Face_site)),
+    xend  = match(Group2, levels(df_lmm$Face_site)),
+    xmid  = (x + xend) / 2
+  )
+
+y_max          <- max(df_lmm$shannon_entropy, na.rm = TRUE)
+pairwise_df$y  <- y_max * seq(1.10, 1.00, length.out = nrow(pairwise_df))
+
+# ── Plot A: Shannon entropy boxplot ───────────────────────────────────────────
+Shannon_entropy_plot_lmm <- ggplot(df_lmm,
+    aes(x = Face_site, y = shannon_entropy, fill = Face_site, color = Face_site)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(pch = 21, position = position_jitterdodge(jitter.width = 1.5),
+             size = 1.5, stroke = 0.3, alpha = 0.6) +
+  scale_fill_manual(values = fill_colors,   labels = face_site_labels) +
+  scale_color_manual(values = border_colors, labels = face_site_labels) +
+  scale_x_discrete(labels = x_labels) +
+  labs(y = "Shannon Entropy", x = NULL,
+       title = "16S rRNA (V4) Alpha Diversity",
+       fill = "Face Site", color = "Face Site") +
+  shared_theme +
+  geom_segment(data = pairwise_df,
+               aes(x = x, xend = xend, y = y, yend = y),
+               inherit.aes = FALSE, color = "black") +
+  geom_text(data = pairwise_df,
+            aes(x = xmid, y = y + 0.02 * y_max, label = label),
+            inherit.aes = FALSE, size = 4)
+
+# ── LMM: Sebum ~ Shannon + Face site ─────────────────────────────────────────
+model_lmm_sebum <- lmer(sebum ~ shannon_entropy + Face_site + (1 | Subject_ID),
+                        data = df_lmm)
+summary(model_lmm_sebum)
+
+sebum_coef <- summary(model_lmm_sebum)$coefficients["shannon_entropy", ]
+cor_text   <- paste0("β = ", round(sebum_coef["Estimate"], 2),
+                     ", p = ", signif(sebum_coef["Pr(>|t|)"], 2))
+
+# ── Plot B: Sebum ~ Shannon scatter ───────────────────────────────────────────
+sebum_shannon_entropy_lmm <- ggplot(df_lmm, aes(x = shannon_entropy, y = sebum)) +
+  geom_point(aes(fill = Face_site, color = Face_site),
+             shape = 21, size = 3, alpha = 0.6, stroke = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.7) +
+  annotate("text", x = Inf, y = Inf, label = cor_text,
+           hjust = 1.1, vjust = 1.5, size = 4) +
+  scale_fill_manual(values = fill_colors,    labels = face_site_labels) +
+  scale_color_manual(values = border_colors, labels = face_site_labels) +
+  labs(x = "Shannon Entropy",
+       y = expression("Sebum content (" * mu * "g/cm"^2 * ")"),
+       title = "Association between Shannon Entropy and Sebum Content",
+       fill = "Face Site", color = "Face Site") +
+  shared_theme
+
+
+# ── Assemble Figure 3 ─────────────────────────────────────────────────────────
+boxplot_fg <- ggarrange(
+  Shannon_entropy_plot_lmm, sebum_shannon_entropy_lmm,
+  ncol = 2, nrow = 1,
+  labels = c("a", "b"),
+  common.legend = FALSE,
+  font.label = list(size = 18, face = "bold")
+)
+
+empty_fg <- ggarrange(
+  NULL, NULL,
+  ncol = 2, nrow = 1,
+  labels = c("c", "d"),
+  font.label = list(size = 18, face = "bold")
+)
+
+top_grid <- ggarrange(
+  boxplot_fg, empty_fg,
+  ncol = 1, nrow = 2,
+  heights = c(1, 1),
+  font.label = list(size = 18, face = "bold")
+)
+```
+
+
+```{r}
+# ── Save ──────────────────────────────────────────────────────────────────────
+ggsave("../figures/main/Figure3.png", plot = top_grid,
+       width = 13, height = 11, dpi = 300)
+ggsave("../figures/main/Figure3.svg", plot = top_grid,
+       width = 13, height = 11)
+```
+
+
+# Supplementary Figure 1
+
+```{r}
+# ── Helper: age correlation scatter ──────────────────────────────────────────
+make_age_cor_scatter <- function(df, x_var, y_var, y_lab, title) {
+  p_x    <- shapiro.test(df[[x_var]])$p.value
+  p_y    <- shapiro.test(df[[y_var]])$p.value
+  method <- ifelse(p_x > 0.05 & p_y > 0.05, "pearson", "spearman")
+
+  cor_test  <- cor.test(df[[x_var]], df[[y_var]], method = method)
+  cor_label <- ifelse(method == "pearson", "Pearson r", "Spearman ρ")
+  cor_text  <- paste0(cor_label, " = ", round(cor_test$estimate, 2),
+                      ", p = ", signif(cor_test$p.value, 2))
+
+  leg_labels <- make_legend_labels(df, "Face_site")
+
+  ggplot(df, aes(x = .data[[x_var]], y = .data[[y_var]])) +
+    geom_point(aes(fill = Face_site, color = Face_site),
+               shape = 21, size = 3, alpha = 0.6, stroke = 0.6) +
+    geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.7) +
+    annotate("text", x = Inf, y = Inf, label = cor_text,
+             hjust = 1.1, vjust = 1.5, size = 4) +
+    scale_fill_manual(values = fill_colors,    labels = leg_labels, name = "Face Site") +
+    scale_color_manual(values = border_colors, labels = leg_labels, name = "Face Site") +
+    labs(x = "Age (years)", y = y_lab, title = title) +
+    shared_theme_minimal
+}
+
+# ── Prepare data ──────────────────────────────────────────────────────────────
+df_temp_a <- Shiseido_metadata %>%
+  mutate(skin_temparature = as.numeric(skin_temparature), a = as.numeric(a),
+         Subject_ID = as.factor(Subject_ID), Face_site = as.factor(Face_site)) %>%
+  filter(!is.na(skin_temparature), !is.na(a)) %>%
+  group_by(Subject_ID, Face_site) %>%
+  summarise(mean_temp = mean(skin_temparature, na.rm = TRUE),
+            mean_a    = mean(a,                na.rm = TRUE), .groups = "drop")
+
+df_temp_L <- Shiseido_metadata %>%
+  mutate(skin_temparature = as.numeric(skin_temparature), L = as.numeric(L),
+         Subject_ID = as.factor(Subject_ID), Face_site = as.factor(Face_site)) %>%
+  filter(!is.na(skin_temparature), !is.na(L)) %>%
+  group_by(Subject_ID, Face_site) %>%
+  summarise(mean_temp = mean(skin_temparature, na.rm = TRUE),
+            mean_L    = mean(L,                na.rm = TRUE), .groups = "drop")
+
+df_water_a <- Shiseido_metadata %>%
+  mutate(water_content = as.numeric(water_content), a = as.numeric(a),
+         Subject_ID = as.factor(Subject_ID), Face_site = as.factor(Face_site)) %>%
+  filter(!is.na(water_content), !is.na(a)) %>%
+  group_by(Subject_ID, Face_site) %>%
+  summarise(mean_water = mean(water_content, na.rm = TRUE),
+            mean_a     = mean(a,             na.rm = TRUE), .groups = "drop")
+
+df_water_L <- Shiseido_metadata %>%
+  mutate(water_content = as.numeric(water_content), L = as.numeric(L),
+         Subject_ID = as.factor(Subject_ID), Face_site = as.factor(Face_site)) %>%
+  filter(!is.na(water_content), !is.na(L)) %>%
+  group_by(Subject_ID, Face_site) %>%
+  summarise(mean_water = mean(water_content, na.rm = TRUE),
+            mean_L     = mean(L,             na.rm = TRUE), .groups = "drop")
+
+df_R2 <- Shiseido_metadata %>%
+  mutate(age = as.numeric(age), cutemeter_R2 = as.numeric(cutemeter_R2),
+         Subject_ID = as.factor(Subject_ID), Face_site = as.factor(Face_site)) %>%
+  filter(!is.na(age), !is.na(cutemeter_R2)) %>%
+  group_by(Subject_ID, age, Face_site) %>%
+  summarise(mean_R2 = mean(cutemeter_R2, na.rm = TRUE), .groups = "drop")
+
+df_R7 <- Shiseido_metadata %>%
+  mutate(age = as.numeric(age), cutemeter_R7 = as.numeric(cutemeter_R7),
+         Subject_ID = as.factor(Subject_ID), Face_site = as.factor(Face_site)) %>%
+  filter(!is.na(age), !is.na(cutemeter_R7)) %>%
+  group_by(Subject_ID, age, Face_site) %>%
+  summarise(mean_R7 = mean(cutemeter_R7, na.rm = TRUE), .groups = "drop")
+
+# ── Plots a–d: LMM scatter ────────────────────────────────────────────────────
+d_LM_avg <- make_lmm_scatter(df_temp_a, "mean_temp", "mean_a",
+  "Skin Temperature (°C)", "Skin Redness (a*)",
+  "Association between average skin temperature and skin redness")
+
+c_LM_avg <- make_lmm_scatter(df_temp_L, "mean_temp", "mean_L",
+  "Skin Temperature (°C)", "Skin Brightness (L*)",
+  "Association between average skin temperature and skin brightness")
+
+skinredness_watercontent_LM_avg <- make_lmm_scatter(df_water_a, "mean_water", "mean_a",
+  "Water Content (a.u.)", "Skin Redness (a*)",
+  "Association between water content and skin redness")
+
+skinbrightness_watercontent_LM_avg <- make_lmm_scatter(df_water_L, "mean_water", "mean_L",
+  "Water Content (a.u.)", "Skin Brightness (L*)",
+  "Association between water content and skin brightness")
+
+# ── Plots e–f: Age correlation ────────────────────────────────────────────────
+r2_plot <- make_age_cor_scatter(df_R2, "age", "mean_R2",
+  "Cutometer R2 (elasticity index)",
+  "Correlation between age and cutometer R2")
+
+r7_plot <- make_age_cor_scatter(df_R7, "age", "mean_R7",
+  "Cutometer R7 (elastic recovery index)",
+  "Correlation between age and cutometer R7")
+
+
+top_grid_suppl1 <- ggarrange(
+  d_LM_avg,
+  c_LM_avg,
+  skinredness_watercontent_LM_avg,
+  skinbrightness_watercontent_LM_avg,
+  r2_plot,
+  r7_plot,
+  ncol          = 2,
+  nrow          = 3,
+  labels        = c("a","b","c","d","e","f"),
+  common.legend = TRUE,
+  legend        = "bottom",
+  font.label    = list(size = 18, face = "bold")
+)
+
+
+```
+
+
+```{r}
+# PNG
+png("../figures/supplementary/suppl_fig1.png", width = 14, height = 13, 
+    units = "in", res = 300)
+print(top_grid_suppl1)
+dev.off()
+
+# SVG
+svg("../figures/supplementary/suppl_fig1.svg", width = 14, height = 13)
+print(top_grid_suppl1)
+dev.off()
+```
+
+Supplementary Figure 4-9
+
+```{r}
+# Required libraries
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(rstatix)
+library(ggpubr)
+library(lme4)
+library(broom.mixed)
+library(performance)
+library(patchwork)
+
+# ── Define x variables and labels ────────────────────────────────────────────
+x_vars <- c("water_content", "sebum", "a", "L", "skin_temparature")
+
+x_axis_labels <- c(
+  "L"                = "Skin Brightness (L*)",
+  "a"                = "Skin Redness (a*)",
+  "b"                = "Skin Yellowness (b*)",
+  "sebum"            = "Sebum concentration (µg/cm²)",
+  "water_content"    = "Water Content (a.u.)",
+  "skin_temparature" = "Skin Temperature (°C)",
+  "age"              = "Age (years)"
+)
+
+# ── Define amino acids ────────────────────────────────────────────────────────
+amino_acids <- c("Asp", "Glu", "hyP", "Ser", "Asn", "Gly", "Gln", "Thr", "Ala", "Tau",
+                 "His", "Cit", "Pro", "Arg", "Val", "Tyr", "Met", "Cys2", "Ile", "Leu",
+                 "Orn", "Lys", "Phe", "Trp", "Total_AAs")
+amino_acids_wo_protein <- paste0(amino_acids, "_wo_Protein")
+Shiseido_metadata$Total_AAs_wo_Protein <- Shiseido_metadata$Total_Aas_wo_Protein
+
+# ── y-axis labels ─────────────────────────────────────────────────────────────
+y_axis_labels_wo_protein <- c(
+  "Asp_wo_Protein"            = "Aspartic Acid",
+  "Glu_wo_Protein"            = "Glutamic Acid",
+  "hyP_wo_Protein"            = "Hydroxyproline",
+  "Ser_wo_Protein"            = "Serine",
+  "Asn_wo_Protein"            = "Asparagine",
+  "Gly_wo_Protein"            = "Glycine",
+  "Gln_wo_Protein"            = "Glutamine",
+  "Thr_wo_Protein"            = "Threonine",
+  "Ala_wo_Protein"            = "Alanine",
+  "Tau_wo_Protein"            = "Taurine",
+  "His_wo_Protein"            = "Histidine",
+  "Cit_wo_Protein"            = "Citrulline",
+  "Pro_wo_Protein"            = "Proline",
+  "Arg_wo_Protein"            = "Arginine",
+  "Val_wo_Protein"            = "Valine",
+  "Tyr_wo_Protein"            = "Tyrosine",
+  "Met_wo_Protein"            = "Methionine",
+  "Cys2_wo_Protein"           = "Cystine",
+  "Ile_wo_Protein"            = "Isoleucine",
+  "Leu_wo_Protein"            = "Leucine",
+  "Orn_wo_Protein"            = "Ornithine",
+  "Lys_wo_Protein"            = "Lysine",
+  "Phe_wo_Protein"            = "Phenylalanine",
+  "Trp_wo_Protein"            = "Tryptophan",
+  "Total_AAs_wo_Protein"      = "Total Amino Acids",
+  "Urea_wo_Protein"           = "Urea",
+  "Creatinine_wo_Protein"     = "Creatinine",
+  "UCA_wo_Protein"            = "Urocanic Acid",
+  "LA_wo_Protein"             = "Lactic Acid",
+  "PCA_wo_Protein"            = "Pyrrolidone Carboxylic Acid",
+  "D.glucosamine_wo_Protein"  = "D-Glucosamine",
+  "Total_org._NMF_wo_Protein" = "Total Organic NMF"
+)
+
+# ── Model comparison (AIC: raw vs log-transformed) ────────────────────────────
+model_comparison_results <- list()
+valid_face_sites <- c("Forehead", "Nose", "Cheek")
+
+for (x in x_vars) {
+  for (y in amino_acids_wo_protein) {
+    sub_df <- Shiseido_metadata %>%
+      filter(Face_site %in% valid_face_sites,
+             !is.na(Subject_ID), Subject_ID != "na") %>%
+      select(Subject_ID, Face_site, all_of(c(x, y))) %>%
+      filter(!is.na(.data[[x]]), !is.na(.data[[y]])) %>%
+      mutate(Subject_ID = as.factor(Subject_ID),
+             Face_site  = as.factor(Face_site))
+
+    if (nrow(sub_df) < 5) next
+
+    model_raw <- tryCatch(
+      lmer(as.formula(paste(y, "~", x, "+ Face_site + (1|Subject_ID)")), data = sub_df),
+      error = function(e) NULL
+    )
+
+    sub_df$log_x <- log10(pmax(as.numeric(sub_df[[x]]), 1))
+    sub_df$log_y <- log10(pmax(as.numeric(sub_df[[y]]), 1))
+
+    model_log <- tryCatch(
+      lmer(log_y ~ log_x + Face_site + (1|Subject_ID), data = sub_df),
+      error = function(e) NULL
+    )
+
+    if (!is.null(model_raw) && !is.null(model_log)) {
+      aic_raw   <- AIC(model_raw)
+      aic_log   <- AIC(model_log)
+      delta_aic <- aic_raw - aic_log
+
+      model_comparison_results[[paste(x, y, sep = "_")]] <- data.frame(
+        X            = x,
+        Y            = y,
+        AIC_raw      = aic_raw,
+        AIC_log      = aic_log,
+        Delta_AIC    = delta_aic,
+        Better_Model = ifelse(delta_aic > 2, "Log-transformed", "Untransformed or Similar")
+      )
+    }
+  }
+}
+
+model_comparison_df <- do.call(rbind, model_comparison_results)
+
+# ── Plotting function ─────────────────────────────────────────────────────────
+output_dir <- "../figures/supplementary/lmm"
+dir.create(output_dir, showWarnings = FALSE)
+
+plot_lmm_by_heatmap_model <- function(x_var, model_comparison_df, metadata_df) {
+  message("Processing: ", x_var)
+
+  plot_list     <- list()
+  relevant_rows <- model_comparison_df %>% filter(X == x_var)
+
+  for (i in seq_len(nrow(relevant_rows))) {
+    y_var        <- relevant_rows$Y[i]
+    better_model <- relevant_rows$Better_Model[i]
+
+    sub_df <- metadata_df %>%
+      filter(Face_site %in% c("Forehead", "Nose", "Cheek"),
+             !is.na(Subject_ID), Subject_ID != "na") %>%
+      select(Subject_ID, Face_site, all_of(c(x_var, y_var))) %>%
+      filter(!is.na(.data[[x_var]]), !is.na(.data[[y_var]])) %>%
+      mutate(Subject_ID = as.factor(Subject_ID),
+             Face_site  = as.factor(Face_site))
+
+    if (nrow(sub_df) < 5) next
+
+    # Legend labels with counts
+    legend_info <- sub_df %>%
+      group_by(Face_site) %>%
+      summarise(n = n(), .groups = "drop") %>%
+      mutate(label = paste0(Face_site, " (n = ", n, ")"))
+    sub_df$Face_site <- factor(sub_df$Face_site, levels = legend_info$Face_site)
+    legend_labels    <- setNames(legend_info$label, legend_info$Face_site)
+
+    # ── Build model and base plot ─────────────────────────────────────────────
+    if (better_model == "Log-transformed") {
+      sub_df$log_x <- log10(pmax(as.numeric(sub_df[[x_var]]), 1))
+      sub_df$log_y <- log10(pmax(as.numeric(sub_df[[y_var]]), 1))
+
+      model <- tryCatch(
+        lmer(log_y ~ log_x + Face_site + (1 | Subject_ID), data = sub_df),
+        error = function(e) NULL
+      )
+      term      <- "log_x"
+      x_label <- bquote(log[10](.(x_axis_labels[[x_var]])))
+      y_label <- bquote(log[10](.(y_axis_labels_wo_protein[[y_var]]) ~ "[pmol/cm²]"))
+      base_plot <- ggplot(sub_df, aes(x = log_x, y = log_y))
+
+    } else {
+      model <- tryCatch(
+        lmer(as.formula(paste(y_var, "~", x_var, "+ Face_site + (1 | Subject_ID)")),
+             data = sub_df),
+        error = function(e) NULL
+      )
+      term      <- x_var
+
+      x_label <- bquote(log[10](.(x_axis_labels[[x_var]])))
+      y_label <- bquote(log[10](.(y_axis_labels_wo_protein[[y_var]]) ~ "[pmol/cm²]"))
+
+      base_plot <- ggplot(sub_df, aes(x = .data[[x_var]], y = .data[[y_var]]))
+    }
+
+    if (!is.null(model)) {
+      model_summary <- broom.mixed::tidy(model)
+      effect_row    <- model_summary %>% filter(term == !!term)
+
+      if (nrow(effect_row) == 1) {
+        cor_text <- paste0("β = ", round(effect_row$estimate, 2),
+                           ", p = ", signif(effect_row$p.value, 2))
+
+        p <- base_plot +
+          geom_point(aes(fill = Face_site, color = Face_site),
+                     shape = 21, size = 2.5, alpha = 0.6, stroke = 0.5) +
+          geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.6) +
+          annotate("text", x = Inf, y = Inf, label = cor_text,
+                   hjust = 1.1, vjust = 1.5, size = 3.5) +
+          scale_fill_manual(values = fill_colors,    name = "Face Site", labels = legend_labels) +
+          scale_color_manual(values = border_colors, guide = "none") +
+          labs(title = y_axis_labels_wo_protein[[y_var]], x = x_label, y = y_label) +
+          theme_minimal(base_size = 12) +
+          theme(
+            panel.grid = element_blank(),
+            axis.line  = element_line(color = "black"),
+            axis.ticks = element_line(color = "black"),
+            axis.text  = element_text(size = 10),
+            axis.title = element_text(size = 11),
+            plot.title = element_text(size = 12, hjust = 0.5)
+          )
+
+        plot_list[[length(plot_list) + 1]] <- p
+      }
+    }
+  }
+
+  if (length(plot_list) > 0) {
+    # Apply legend theme to each plot individually — avoids & operator issues
+    plot_list <- lapply(plot_list, function(p) {
+      p + theme(
+        legend.position  = "bottom",
+        legend.direction = "horizontal",
+        legend.title     = element_text(size = 11),
+        legend.text      = element_text(size = 10),
+        plot.tag         = element_text(size = 14, face = "bold")
+      )
+    })
+
+    combined_plot <- wrap_plots(plot_list, ncol = 4, guides = "collect") +
+      plot_annotation(
+        title      = paste0("Amino Acid / NMF vs ", x_axis_labels[[x_var]],
+                            " (LMM adjusted for Face Site and Subject ID)"),
+        tag_levels = "a",
+        theme      = theme(                        # ← controls the overall layout theme
+          legend.position  = "bottom",
+          legend.direction = "horizontal",
+          plot.title       = element_text(size = 14, hjust = 0.5)
+        )
+      )
+
+
+    png(file.path(output_dir, paste0(x_var, "_vs_aminoacids.png")),
+        width = 16, height = 20, units = "in", res = 300)
+    print(combined_plot)
+    dev.off()
+
+    svg(file.path(output_dir, paste0(x_var, "_vs_aminoacids.svg")),
+        width = 16, height = 20)
+    print(combined_plot)
+    dev.off()
+  }
+}
+
+# ── Run for all predictors ────────────────────────────────────────────────────
+for (x in x_vars) {
+  plot_lmm_by_heatmap_model(
+    x_var               = x,
+    model_comparison_df = model_comparison_df,
+    metadata_df         = Shiseido_metadata
+  )
+}
+```
+
+#Supplementary Figure 17-18
+
+```{r}
+# Adapt for those 
+
+# Define column names
+amino_acids <- c("Urea","Creatinine","UCA","LA","PCA")#,"Total_org._NMF")
+
+amino_acids_wo_protein <- paste0(amino_acids, "_wo_Protein")
+```
+
+
+```{r}
+# ── Amino acid definitions ────────────────────────────────────────────────────
+amino_acids <- c("Asp", "Glu", "hyP", "Ser", "Asn", "Gly", "Gln", "Thr", "Ala", "Tau",
+                 "His", "Cit", "Pro", "Arg", "Val", "Tyr", "Met", "Cys2", "Ile", "Leu",
+                 "Orn", "Lys", "Phe", "Trp", "Total_AAs")
+amino_acids_wo_protein <- paste0(amino_acids, "_wo_Protein")
+Shiseido_metadata$Total_AAs_wo_Protein <- Shiseido_metadata$Total_Aas_wo_Protein
+```
+
+
+
+```{r}
+# ── Plotting function ─────────────────────────────────────────────────────────
+plot_amino_entropy <- function(df, col_name, label, normalized = TRUE) {
+  df <- df %>%
+    mutate(
+      x_raw = as.numeric(shannon_entropy),
+      y_raw = as.numeric(.data[[col_name]]),
+      log_x = log10(x_raw + 0.01),
+      log_y = log10(y_raw + 0.01)
+    ) %>%
+    filter(!is.na(log_x), !is.na(log_y))
+
+  if (nrow(df) < 3 || length(unique(df$log_y)) <= 1) {
+    message(paste("Skipping", col_name, "- not enough valid data or no variability."))
+    return(NULL)
+  }
+
+  # Normality tests on untransformed data to choose method
+  p_x <- tryCatch(shapiro.test(df$x_raw)$p.value, error = function(e) NA)
+  p_y <- tryCatch(shapiro.test(df$y_raw)$p.value, error = function(e) NA)
+  method <- if (!is.na(p_x) && !is.na(p_y) && p_x > 0.05 && p_y > 0.05) "pearson" else "spearman"
+
+  cor_result <- tryCatch(
+    cor.test(df$log_x, df$log_y, method = method),
+    error = function(e) NULL
+  )
+
+  if (is.null(cor_result)) {
+    message(paste("Skipping", col_name, "- correlation test failed."))
+    return(NULL)
+  }
+
+  cor_label <- if (method == "pearson") "Pearson r" else "Spearman \u03c1"
+  cor_text  <- paste0(cor_label, " = ", round(cor_result$estimate, 2),
+                      ", p = ", signif(cor_result$p.value, 2))
+
+  y_unit  <- if (normalized) "nmol/mg protein" else "pmol/cm\u00b2"
+  y_label <- bquote(log[10]*"("*.(label)*" ["*.(y_unit)*"])")
+
+  ggplot(df, aes(x = log_x, y = log_y)) +
+    geom_point(aes(fill = Face_site, color = Face_site),
+               shape = 21, size = 3, alpha = 0.6, stroke = 0.6) +
+    geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.7) +
+    annotate("text", x = Inf, y = Inf, label = cor_text,
+             hjust = 1.1, vjust = 1.5, size = 4) +
+    scale_fill_manual(values = fill_colors,    name = "Face Site") +
+    scale_color_manual(values = border_colors, name = "Face Site") +
+    labs(
+      x     = bquote(log[10]*"(Shannon Entropy)"),
+      y     = y_label,
+      title = paste("Correlation with", label)
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      panel.grid   = element_blank(),
+      axis.line    = element_line(color = "black"),
+      axis.ticks   = element_line(color = "black"),
+      axis.title   = element_text(size = 18),
+      axis.text    = element_text(size = 16),
+      plot.title   = element_text(size = 20, hjust = 0.5),
+      legend.position  = "bottom",
+      legend.title     = element_text(size = 17),
+      legend.text      = element_text(size = 16),
+      legend.key.size  = unit(0.8, "cm"),
+      legend.spacing.x = unit(0.4, "cm")
+    )
+}
+
+# ── Build plot lists ──────────────────────────────────────────────────────────
+plots <- Filter(Negate(is.null), lapply(amino_acids, function(col) {
+  plot_amino_entropy(Shiseido_metadata, col, col, normalized = TRUE)
+}))
+
+plots_wo <- Filter(Negate(is.null), lapply(amino_acids_wo_protein, function(col) {
+  label <- gsub("_wo_Protein", "", col)
+  plot_amino_entropy(Shiseido_metadata, col, label, normalized = FALSE)
+}))
+
+# ── Assemble — apply theme per plot to avoid & precedence issue ───────────────
+apply_tag_theme <- function(plot_list) {
+  lapply(plot_list, function(p) {
+    p + theme(plot.tag = element_text(size = 20, face = "bold"))
+  })
+}
+
+
+
+```
+
+
+```{r}
+
+combined_plot <- wrap_plots(apply_tag_theme(plots), ncol = 4, guides = "collect") +
+  plot_annotation(
+    tag_levels = "a",
+    theme = theme(
+      legend.position  = "bottom",
+      legend.direction = "horizontal",
+      legend.title     = element_text(size = 17),
+      legend.text      = element_text(size = 16),
+      legend.key.size  = unit(0.8, "cm"),
+      legend.spacing.x = unit(0.4, "cm")
+    )
+  )
+
+combined_plot_wo <- wrap_plots(apply_tag_theme(plots_wo), ncol = 4, guides = "collect") +
+  plot_annotation(
+    tag_levels = "a",
+    theme = theme(
+      legend.position  = "bottom",
+      legend.direction = "horizontal",
+      legend.title     = element_text(size = 17),
+      legend.text      = element_text(size = 16),
+      legend.key.size  = unit(0.8, "cm"),
+      legend.spacing.x = unit(0.4, "cm")
+    )
+  )
+# ── Save ──────────────────────────────────────────────────────────────────────
+dir.create("../figures/supplementary/spearman", showWarnings = FALSE, recursive = TRUE)
+
+png("../figures/supplementary/spearman/Shannon_vs_AminoAcids_log.png",
+    width = 20, height = 28, units = "in", res = 300)
+print(combined_plot)
+dev.off()
+
+png("../figures/supplementary/spearman/Shannon_vs_AminoAcids_no_protein_log.png",
+    width = 22, height = 28, units = "in", res = 300)
+print(combined_plot_wo)
+dev.off()
+
+svg("../figures/supplementary/spearman/Shannon_vs_AminoAcids_log.svg",
+    width = 20, height = 28)
+print(combined_plot)
+dev.off()
+
+svg("../figures/supplementary/spearman/Shannon_vs_AminoAcids_no_protein_log.svg",
+    width = 22, height = 28)
+print(combined_plot_wo)
+dev.off()
+```
+
+```{r}
+
+combined_plot <- wrap_plots(apply_tag_theme(plots), ncol = 2, guides = "collect") +
+  plot_annotation(
+    tag_levels = "a",
+    theme = theme(
+      legend.position  = "bottom",
+      legend.direction = "horizontal",
+      legend.title     = element_text(size = 17),
+      legend.text      = element_text(size = 16),
+      legend.key.size  = unit(0.8, "cm"),
+      legend.spacing.x = unit(0.4, "cm")
+    )
+  )
+
+combined_plot_wo <- wrap_plots(apply_tag_theme(plots_wo), ncol = 2, guides = "collect") +
+  plot_annotation(
+    tag_levels = "a",
+    theme = theme(
+      legend.position  = "bottom",
+      legend.direction = "horizontal",
+      legend.title     = element_text(size = 17),
+      legend.text      = element_text(size = 16),
+      legend.key.size  = unit(0.8, "cm"),
+      legend.spacing.x = unit(0.4, "cm")
+    )
+  )
+# ── Save ──────────────────────────────────────────────────────────────────────
+dir.create("../figures/supplementary/spearman", showWarnings = FALSE, recursive = TRUE)
+
+png("../figures/supplementary/spearman/Shannon_vs_NMFs_log.png",
+    width = 10, height = 10, units = "in", res = 300)
+print(combined_plot)
+dev.off()
+
+png("../figures/supplementary/spearman/Shannon_vs_NMFs_no_protein_log.png",
+    width = 10, height = 10, units = "in", res = 300)
+print(combined_plot_wo)
+dev.off()
+
+svg("../figures/supplementary/spearman/Shannon_vs_NMFs_log.svg",
+    width = 10, height = 10)
+print(combined_plot)
+dev.off()
+
+svg("../figures/supplementary/spearman/Shannon_vs_NMFs_no_protein_log.svg",
+    width = 10, height = 10)
+print(combined_plot_wo)
+dev.off()
+```
+
+#Figure 4
+
+```{r}
+library(dplyr)
+library(lme4)
+library(broom.mixed)
+library(performance)
+library(ggplot2)
+
+# ── Amino acid definitions ────────────────────────────────────────────────────
+amino_acids <- c("Asp", "Glu", "hyP", "Ser", "Asn", "Gly", "Gln", "Thr", "Ala", "Tau",
+                 "His", "Cit", "Pro", "Arg", "Val", "Tyr", "Met", "Cys2", "Ile", "Leu",
+                 "Orn", "Lys", "Phe", "Trp", "Total_AAs", "Urea", "Creatinine", "UCA",
+                 "LA", "PCA", "D.glucosamine", "Total_org._NMF")
+amino_acids_wo_protein     <- paste0(amino_acids, "_wo_Protein")
+Shiseido_metadata$Total_AAs_wo_Protein <- Shiseido_metadata$Total_Aas_wo_Protein
+
+y_axis_labels_wo_protein <- c(
+  "Asp_wo_Protein"            = "Aspartic Acid",
+  "Glu_wo_Protein"            = "Glutamic Acid",
+  "hyP_wo_Protein"            = "Hydroxyproline",
+  "Ser_wo_Protein"            = "Serine",
+  "Asn_wo_Protein"            = "Asparagine",
+  "Gly_wo_Protein"            = "Glycine",
+  "Gln_wo_Protein"            = "Glutamine",
+  "Thr_wo_Protein"            = "Threonine",
+  "Ala_wo_Protein"            = "Alanine",
+  "Tau_wo_Protein"            = "Taurine",
+  "His_wo_Protein"            = "Histidine",
+  "Cit_wo_Protein"            = "Citrulline",
+  "Pro_wo_Protein"            = "Proline",
+  "Arg_wo_Protein"            = "Arginine",
+  "Val_wo_Protein"            = "Valine",
+  "Tyr_wo_Protein"            = "Tyrosine",
+  "Met_wo_Protein"            = "Methionine",
+  "Cys2_wo_Protein"           = "Cystine",
+  "Ile_wo_Protein"            = "Isoleucine",
+  "Leu_wo_Protein"            = "Leucine",
+  "Orn_wo_Protein"            = "Ornithine",
+  "Lys_wo_Protein"            = "Lysine",
+  "Phe_wo_Protein"            = "Phenylalanine",
+  "Trp_wo_Protein"            = "Tryptophan",
+  "Total_AAs_wo_Protein"      = "Total Amino Acids",
+  "Urea_wo_Protein"           = "Urea",
+  "Creatinine_wo_Protein"     = "Creatinine",
+  "UCA_wo_Protein"            = "Urocanic Acid",
+  "LA_wo_Protein"             = "Lactic Acid",
+  "PCA_wo_Protein"            = "Pyrrolidone Carboxylic Acid",
+  "D.glucosamine_wo_Protein"  = "D-Glucosamine",
+  "Total_org._NMF_wo_Protein" = "Total Organic NMF"
+)
+
+# ── Shared helper: subset and prepare data ────────────────────────────────────
+prep_sub_df <- function(x, y, metadata) {
+  metadata %>%
+    filter(Face_site %in% c("Forehead", "Nose", "Cheek"),
+           !is.na(Subject_ID), Subject_ID != "na") %>%
+    select(Subject_ID, Face_site, all_of(c(x, y))) %>%
+    filter(!is.na(.data[[x]]), !is.na(.data[[y]])) %>%
+    mutate(Subject_ID = as.factor(Subject_ID),
+           Face_site  = as.factor(Face_site))
+}
+
+# ── Shared helper: finalize LMM result dataframe ──────────────────────────────
+finalize_lmm_df <- function(results_list) {
+  df <- do.call(rbind, results_list)
+  df$q_value <- p.adjust(df$p_value, method = "fdr")
+  df <- df %>%
+    mutate(
+      signed_logq = -sign(Beta) * log10(q_value),
+      stars = case_when(
+        q_value < 0.001 ~ "***",
+        q_value < 0.01  ~ "**",
+        q_value < 0.05  ~ "*",
+        TRUE            ~ ""
+      ),
+      X_label = x_axis_labels[X],
+      Y_label = y_axis_labels_wo_protein[Y]
+    )
+  df$X_label <- factor(df$X_label, levels = x_axis_labels[x_vars])
+  df$Y_label <- factor(df$Y_label,
+                       levels = rev(y_axis_labels_wo_protein[amino_acids_wo_protein]))
+  df
+}
+
+# ── Loop 1: raw LMM ───────────────────────────────────────────────────────────
+lmm_results_raw <- list()
+
+for (x in x_vars) {
+  for (y in amino_acids_wo_protein) {
+    sub_df <- prep_sub_df(x, y, Shiseido_metadata)
+    if (nrow(sub_df) < 5) next
+
+    model <- tryCatch(
+      lmer(as.formula(paste(y, "~", x, "+ Face_site + (1|Subject_ID)")), data = sub_df),
+      error = function(e) NULL
+    )
+    if (is.null(model)) next
+
+    effect_row <- broom.mixed::tidy(model) %>% filter(term == x)
+    if (nrow(effect_row) != 1) next
+
+    lmm_results_raw[[paste(x, y, sep = "_")]] <- data.frame(
+      X = x, Y = y,
+      Beta    = effect_row$estimate,
+      p_value = effect_row$p.value
+    )
+  }
+}
+
+lmm_df_raw <- finalize_lmm_df(lmm_results_raw)
+
+# ── Loop 2: AIC comparison (raw vs log) ───────────────────────────────────────
+model_comparison_results <- list()
+
+for (x in x_vars) {
+  for (y in amino_acids_wo_protein) {
+    sub_df <- prep_sub_df(x, y, Shiseido_metadata)
+    if (nrow(sub_df) < 5) next
+
+    model_raw <- tryCatch(
+      lmer(as.formula(paste(y, "~", x, "+ Face_site + (1|Subject_ID)")), data = sub_df),
+      error = function(e) NULL
+    )
+    sub_df$log_x <- log10(pmax(as.numeric(sub_df[[x]]), 1))
+    sub_df$log_y <- log10(pmax(as.numeric(sub_df[[y]]), 1))
+    model_log <- tryCatch(
+      lmer(log_y ~ log_x + Face_site + (1|Subject_ID), data = sub_df),
+      error = function(e) NULL
+    )
+
+    if (is.null(model_raw) || is.null(model_log)) next
+
+    delta_aic <- AIC(model_raw) - AIC(model_log)
+    model_comparison_results[[paste(x, y, sep = "_")]] <- data.frame(
+      X = x, Y = y,
+      AIC_raw      = AIC(model_raw),
+      AIC_log      = AIC(model_log),
+      Delta_AIC    = delta_aic,
+      Better_Model = ifelse(delta_aic > 2, "Log-transformed", "Untransformed or Similar")
+    )
+  }
+}
+
+model_comparison_df <- do.call(rbind, model_comparison_results)
+
+# ── Loop 3: refit using best model per AIC ────────────────────────────────────
+lmm_heatmap_results <- list()
+
+for (i in seq_len(nrow(model_comparison_df))) {
+  x            <- model_comparison_df$X[i]
+  y            <- model_comparison_df$Y[i]
+  better_model <- model_comparison_df$Better_Model[i]
+
+  sub_df <- prep_sub_df(x, y, Shiseido_metadata)
+  if (nrow(sub_df) < 5) next
+
+  if (better_model == "Log-transformed") {
+    sub_df$log_x <- log10(pmax(as.numeric(sub_df[[x]]), 1))
+    sub_df$log_y <- log10(pmax(as.numeric(sub_df[[y]]), 1))
+    model <- tryCatch(
+      lmer(log_y ~ log_x + Face_site + (1|Subject_ID), data = sub_df),
+      error = function(e) NULL
+    )
+    term <- "log_x"
+  } else {
+    model <- tryCatch(
+      lmer(as.formula(paste(y, "~", x, "+ Face_site + (1|Subject_ID)")), data = sub_df),
+      error = function(e) NULL
+    )
+    term <- x
+  }
+
+  if (is.null(model)) next
+  effect_row <- broom.mixed::tidy(model) %>% filter(term == !!term)
+  if (nrow(effect_row) != 1) next
+
+  lmm_heatmap_results[[paste(x, y, sep = "_")]] <- data.frame(
+    X = x, Y = y,
+    Beta    = effect_row$estimate,
+    p_value = effect_row$p.value
+  )
+}
+
+lmm_df_heatmap <- finalize_lmm_df(lmm_heatmap_results)
+
+# ── Shared heatmap theme ──────────────────────────────────────────────────────
+heatmap_theme <- theme_minimal() +
+  theme(
+    axis.text.x   = element_text(angle = 45, hjust = 1),
+    axis.text     = element_text(size = 12),
+    axis.title    = element_text(size = 12),
+    axis.ticks    = element_blank(),
+    panel.border  = element_rect(color = "black", fill = NA, linewidth = 1),
+    panel.background = element_blank(),
+    panel.grid    = element_blank()
+  )
+
+heatmap_fill <- scale_fill_gradient2(
+  low      = "#4575b4",
+  mid      = "white",
+  high     = "#e08214",
+  midpoint = 0,
+  name     = expression(-sign(beta) * log[10](q))
+)
+
+# ── Heatmap helper ────────────────────────────────────────────────────────────
+make_heatmap <- function(df, x_var, y_var, x_lab, y_lab, title) {
+  ggplot(df, aes(x = .data[[x_var]], y = .data[[y_var]], fill = signed_logq)) +
+    geom_tile(color = "white", width = 0.9, height = 0.9) +
+    geom_text(aes(label = stars), color = "black", size = 5,
+              hjust = 0.5, vjust = 0.8) +
+    heatmap_fill +
+    heatmap_theme +
+    labs(x = x_lab, y = y_lab, title = title)
+}
+
+# ── Plot heatmaps ─────────────────────────────────────────────────────────────
+heatmap_final <- make_heatmap(
+  lmm_df_heatmap,
+  x_var = "X_label", y_var = "Y_label",
+  x_lab = NULL,
+  y_lab = "Amino Acids and NMFs (pmol/cm²)",
+  title = "LMM Associations (Best Model Fit)"
+)
+
+heatmap_transposed <- make_heatmap(
+  lmm_df_heatmap,
+  x_var = "Y_label", y_var = "X_label",
+  x_lab = "Amino Acids and NMFs (pmol/cm²)",
+  y_lab = NULL,
+  title = "Associations between skin biophysical properties and targeted metabolites"
+)
+
+print(heatmap_final)
+print(heatmap_transposed)
+```
+
+
+
+#### METABOLOMICS 
+
+```{r packages}
+library(tidyverse)
+library(mixOmics)
+library(ggpubr)
+library(vegan)
+library(caret)
+library(rstatix)
+library(UpSetR)
+library(homologueDiscoverer)
+library(ggdensity)
+library(cowplot)
+library(readxl)
+library(lmerTest)
+library(RColorBrewer)
+library(MassTools)
+library(shiny)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(svglite)
+library(Cairo)
+```
+```{r}
+#Function for homologues analysis
+plotAnnotatedStatic <- function(annotated, legend_setting = "bottom"){
+  
+  annotated <- mutate(annotated,
+                      homologue_id = if_else(is.na(homologue_id), 0L, homologue_id),
+                      homologue_id = as.factor(homologue_id))
+  colourCount = length(unique(annotated$homologue_id))
+  getPalette = colorRampPalette(RColorBrewer::brewer.pal(9, "Set1"))
+  ncolor = length(unique(annotated$homologue_id))
+  annotated <- arrange(annotated, desc(homologue_id))
+  g <- ggplot(annotated, aes(group = homologue_id)) +
+    geom_point(aes(x = rt, y = mz, color = homologue_id, size = homologue_id,
+                   shape = homologue_id, alpha = homologue_id)) +
+    geom_line(data = filter(annotated, homologue_id != 0),
+              aes(x = rt, y = mz, group = homologue_id), alpha = 0.4, linewidth = 0.1) +
+    ggtitle("Annotated Peak Table") +
+    scale_colour_manual(values = c("black", getPalette(colourCount-1))) +
+    scale_alpha_manual(values =  c(0.2, rep(0.85, times = ncolor))) +
+    scale_size_manual(values = c(0.1, rep(1.5, times = ncolor))) +
+    scale_shape_manual(values = c(1, rep(19, times = ncolor))) +
+    xlab("Retention Time (s)") +
+    ylab("Mass to Charge Ratio") +
+    theme(legend.position=legend_setting, text = element_text(family="mono"))
+  return(g)
+  
+}
+```
+
+
+```{r}
+#Load in Data 
+feature_table <- read_csv("../data/metabolomics/Britta_Shiseido_FBMN_2_attempt-d80187a83bd44a49901c57d813265012-featuretable_reformated.csv")
+
+
+metadata <- read.csv("../data/Shiseido_metadata.txt", header=TRUE, sep="\t", stringsAsFactors=FALSE)
+metadata <- metadata[metadata$X.SampleID != "" & !is.na(metadata$X.SampleID), ]
+
+
+#sample_order <- read.csv("../Data/metabolomics/Run3_10252024/Sequence_order_10262024.csv")
+
+#with suspects
+#annotations <- read.delim("")
+#without suspects
+#annotations <- read.delim("../data/metabolomics/d80187a83bd44a49901c57d813265012-merged_results_with_gnps.tsv")
+#annotations from run Britta_Shiseido_FBMN_2_attempt3quant_SZ_MC_PD_05072025
+annotations <- read.delim("../data/metabolomics/Britta_Shiseido_FBMN_2_attempt3quant_SZ_MC_PD_05072025-merged_results_with_gnps.tsv")
+annotations$X.Scan. <- as.character(annotations$X.Scan.)
+
+
+canopus <- read_tsv("../data/metabolomics/canopus_structure_summary.tsv")
+canopus$featureId <- as.character(canopus$mappingFeatureId)
+
+mapping_file <- read.delim("../data/metabolomics/gnps_metadata.tsv")
+
+```
+
+
+```{r}
+duplicates_in_metadata <- metadata[metadata$X.SampleID %in% metadata$X.SampleID[duplicated(metadata$X.SampleID)], ]
+
+```
+
+```{r}
+
+metadata_2 <- metadata %>% full_join(mapping_file, by = c("ID" = "Study_SubjectIdentifierAsRecorded"))
+
+```
+```{r}
+metadata_with_runorder <- metadata_2 %>%
+  mutate(Order = as.numeric(str_extract(filename, "(?<=_)[0-9]+(?=\\.mzXML)"))) %>%
+  arrange(Order)
+
+```
+
+
+
+```{r}
+# metadata_with_runorder$ATTRIBUTE_Curated_SampleType_Sub1 contains the sample type column
+# Show rows where 'ATTRIBUTE_Curated_SampleType_Sub1' equals the target value
+filtered_rows <- metadata_with_runorder %>%
+  filter(ATTRIBUTE_Curated_SampleType_Sub1 == "blank_analysis")
+
+# Print the full rows
+print(filtered_rows)
+
+```
+
+```{r}
+### Import exported dataframe
+Shiseidodf <- read.csv("../data/Shiseidodfc.txt", header=TRUE, sep="\t", stringsAsFactors=FALSE)
+```
+```{r}
+### Order Face_site
+Shiseidodf$Face_site<-factor(Shiseidodf$Face_site, levels=c("Forehead", "Nose", "Cheek", "Temple","Chin","Ear","Neck"))
+```
+```{r}
+metadata_with_runorder2 <- metadata_with_runorder
+```
+
+```{r}
+# Merge only Face_site for matching X.SampleID in Shiseido_metadata
+metadata_with_runorder <- merge(
+  metadata_with_runorder,
+  Shiseidodf[, c("X.SampleID", "Face_site")],
+  by = "X.SampleID",
+  all.x = TRUE  # ensures only SampleIDs present in Shiseido_metadata are kept
+)
+```
+
+```{r}
+sum(metadata_with_runorder$ATTRIBUTE_Curated_SampleType_Sub1 == "skin", na.rm = TRUE)
+```
+
+
+```{r}
+sum(metadata_with_runorder$ATTRIBUTE_Curated_SampleType_Sub1 == "blank_analysis", na.rm = TRUE)
+```
+```{r}
+sum(metadata_with_runorder$ATTRIBUTE_Curated_SampleType_Sub1 == "reference material_personalcareproduct", na.rm = TRUE)
+```
+
+```{r}
+info_feature <- feature_table %>% dplyr::select(1:3,8)
+colnames(info_feature) <- c("Feature", "mz", "RT", "Corr_ID")
+info_feature$Feature <- as.character(info_feature$Feature)
+
+canopus$mappingFeatureId <-as.character(canopus$mappingFeatureId)
+info_feature_complete <- info_feature %>% 
+  left_join(annotations, by = c("Feature" = "X.Scan.")) %>%
+  dplyr::select(1:4,18,24) %>% 
+  left_join(canopus %>% distinct(mappingFeatureId, .keep_all = TRUE), by = c("Feature" = "mappingFeatureId"))
+```
+
+
+
+
+```{r}
+metadata_with_runorder$filename_2 <- metadata_with_runorder$filename
+
+metadata_with_runorder$filename_2 <- gsub(".mzXML", "", metadata_with_runorder$filename_2)
+```
+
+
+```{r}
+# Extract data table 
+data <- feature_table %>% 
+  column_to_rownames("row ID") %>% dplyr::select(contains("Peak")) %>% 
+  t() %>% as.data.frame() %>% rownames_to_column("SampleID") %>% 
+  arrange(SampleID) %>% distinct(SampleID, .keep_all = TRUE)
+
+data$SampleID <- gsub(".mzXML Peak area", "", data$SampleID)
+
+
+```
+
+```{r}
+metadata_with_runorder$Subject_ID <- sub("-.*", "", metadata_with_runorder$microbiome_ID)
+
+metadata_with_runorder_clean <- metadata_with_runorder %>%
+  filter(!is.na(Subject_ID), !is.na(sebum))
+```
+
+
+```{r}
+# List of SampleIDs in `data` that are not found in metadata
+missing_samples <- data$SampleID[!data$SampleID %in% metadata_with_runorder$filename_2]
+
+# Print missing sample IDs
+print(missing_samples)
+
+```
+
+```{r}
+# Samples in metadata but not in data
+missing_in_data <- metadata_with_runorder$filename_2[!metadata_with_runorder$filename_2 %in% data$SampleID]
+
+# Print them
+print(missing_in_data)
+
+```
+
+```{r}
+metadata_with_runorder <- metadata_with_runorder %>%
+  filter(!is.na(filename_2))
+
+```
+```{r}
+# Create and bind new rows with filename_2 set, all other columns as NA
+metadata_with_runorder <- bind_rows(
+  metadata_with_runorder,
+  tibble(filename_2 = missing_samples)
+)
+
+```
+
+```{r}
+metadata_with_runorder <- metadata_with_runorder %>%
+  mutate(Order = as.numeric(str_extract(filename_2, "\\d+(?=\\s*$|\\.mzXML$)")))
+
+```
+
+```{r}
+metadata_with_runorder <- metadata_with_runorder %>%
+  mutate(Sample_Type2 = case_when(
+    ATTRIBUTE_Curated_SampleType_Sub1 == "skin" ~ "samples",
+    ATTRIBUTE_Curated_SampleType_Sub1 == "reference material_personalcareproduct" ~ "BP",
+    ATTRIBUTE_Curated_SampleType_Sub1 == "blank_analysis" ~ "blank_swabs",
+    TRUE ~ NA_character_  # set the rest to NA for now
+  )) %>%
+  mutate(Sample_Type2 = case_when(
+    !is.na(Sample_Type2) ~ Sample_Type2,  # keep already assigned
+    str_detect(filename_2, regex("QC", ignore_case = TRUE)) ~ "QC",
+    str_detect(filename_2, regex("wash", ignore_case = TRUE)) ~ "wash",
+    str_detect(filename_2, regex("blank", ignore_case = TRUE)) ~ "blank",
+    TRUE ~ NA_character_
+  ))
+```
+
+```{r}
+data_final <- data
+```
+
+
+```{r}
+# Calculate Total Ion Count (TIC)
+
+
+data_TIC <- data.frame(TIC = rowSums(data_final %>% column_to_rownames("SampleID"))) %>% 
+  rownames_to_column("SampleID") %>%
+  left_join(
+    metadata_with_runorder %>% select(filename_2, Order, Subject_ID),
+    by = c("SampleID" = "filename_2")
+  )
+
+
+```
+
+
+
+
+```{r}
+
+data_TIC2 <- data_TIC %>%
+  filter(!str_detect(SampleID, regex("blank|wash|QC|emu|loit", ignore_case = TRUE)))
+
+data_TIC %>%
+  filter(!str_detect(SampleID, regex("blank|wash|QC|emu|loit", ignore_case = TRUE))) %>%
+  #left_join(metadata_with_runorder, by = c("SampleID" = "filename_2")) %>%
+  mutate(SubjectNo = as.factor(Subject_ID)) %>%
+  ggscatter(x = "Order", y = "TIC", color = "Subject_ID", add = "reg.line") +
+  stat_cor()
+
+
+```
+
+
+
+```{r}
+# Check sample type
+sample_tic <-  data_TIC %>% dplyr::filter(!(str_detect(SampleID, regex("blank|wash|QC|emu|loit", ignore_case = TRUE)))) %>% summarise(mean(TIC))
+qc_tic <- data_TIC %>%   dplyr::filter(str_detect(SampleID, "QC") | str_detect(SampleID, regex("QC", ignore_case = TRUE))) %>% summarise(mean(TIC))
+
+#blank swabs
+blank_swabs_ids <- metadata_with_runorder %>%
+  filter(Sample_Type2 == "blank_swabs") %>%
+  pull(filename_2)
+
+blank_swabs_tic <- data_TIC %>%
+  filter(SampleID %in% blank_swabs_ids) %>%
+  summarise(mean_TIC = mean(TIC, na.rm = TRUE))
+
+#blank samples 
+
+blank_ids <- metadata_with_runorder %>%
+  filter(Sample_Type2 == "blank") %>%
+  pull(filename_2)
+
+blank_tic <- data_TIC %>%
+  filter(SampleID %in% blank_ids) %>%
+  summarise(mean_TIC = mean(TIC, na.rm = TRUE))
+
+#BP 
+
+BP_ids <- metadata_with_runorder %>%
+  filter(Sample_Type2 == "BP") %>%
+  pull(filename_2)
+
+BP_tic <- data_TIC %>%
+  filter(SampleID %in% BP_ids) %>%
+  summarise(mean_TIC = mean(TIC, na.rm = TRUE))
+
+#wash samples 
+
+wash_ids <- metadata_with_runorder %>%
+  filter(Sample_Type2 == "wash") %>%
+  pull(filename_2)
+
+wash_tic <- data_TIC %>%
+  filter(SampleID %in% wash_ids) %>%
+  summarise(mean_TIC = mean(TIC, na.rm = TRUE))
+
+
+
+ratio_tic_sb <- sample_tic/blank_tic
+ratio_tic_6p <- sample_tic/qc_tic
+ratio_tic_swab <- sample_tic/blank_swabs_tic
+ratio_tic_bp <- sample_tic/BP_tic
+
+```
+
+```{r}
+a0 <- data_TIC %>% dplyr::filter(!(str_detect(SampleID, regex("blank|wash|QC|emu|loit", ignore_case = TRUE)))) %>% 
+  ggscatter("Order", "TIC", add = "reg.line") +
+  stat_cor() +ylim(0, 1e7) + ggtitle("TIC over Time for Samples")
+```
+
+
+
+
+```{r}
+# Check internal standard and remove sample where there was a shift
+fbmn_IS <- annotations %>% dplyr::filter(str_detect(Compound_Name, regex("sulf", ignore_case = TRUE))) %>% 
+  distinct(X.Scan., .keep_all = TRUE) %>% dplyr::filter(Organism != "BILELIB19")
+```
+#Sulfadimethoxine
+```{r}
+#sulfadimethoxine was the one that was used according to Jasmine 
+#X.Scan. 642
+table_IS <- data_final %>% column_to_rownames("SampleID") %>% t() %>% as.data.frame() %>% rownames_to_column("ID") %>% 
+  dplyr::filter(ID %in% fbmn_IS$X.Scan.) %>% column_to_rownames("ID") %>% t() %>% as.data.frame() %>% 
+  rownames_to_column("filename") %>% left_join(metadata_with_runorder, by = c("filename" = "filename_2")) %>%
+  dplyr::filter(!(str_detect(filename, regex("blank|wash|QC|emu|loit", ignore_case = TRUE)))) %>%
+  dplyr::select(filename, `642`, Order, filename)
+```
+
+```{r}
+colnames(table_IS)[2] <- "Sulfadimethoxine"
+
+sulfadimethoxine <-table_IS %>% ggscatter(x = "Order", y = "Sulfadimethoxine", add = c("reg.line")) +
+  stat_cor() + ylim(0, 5e4)
+```
+```{r}
+ggsave("./Figures/Metabolomics/QC/Sulfadimethoxine.png", plot = last_plot(), dpi = 300, width = 8, height = 6, units = "in")
+```
+
+```{r}
+table_IS %>% ggbarplot(x = "Order", y = "Sulfadimethoxine", xlab = "Run Order", 
+                       ylab = "Peak Area sulfadimethoxine", title = "Internal Standard Acquisition") +
+  geom_hline(yintercept = mean(table_IS$Sulfadimethoxine, na.rm = TRUE), linetype = "dashed", color = "blue")
+
+cv_is <- sd(table_IS$Sulfadimethoxine)/mean(table_IS$Sulfadimethoxine)
+
+#CV is 18,18452% 
+#CV<30% is considered as good
+```
+```{r}
+#sulfadimethoxine was the one that was used according to Jasmine 
+#X.Scan. 222
+table_IS <- data_final %>% column_to_rownames("SampleID") %>% t() %>% as.data.frame() %>% rownames_to_column("ID") %>% 
+  dplyr::filter(ID %in% fbmn_IS$X.Scan.) %>% column_to_rownames("ID") %>% t() %>% as.data.frame() %>% 
+  rownames_to_column("filename") %>% left_join(metadata_with_runorder, by = c("filename" = "filename_2")) %>%
+  dplyr::filter(!(str_detect(filename, regex("blank|wash|QC|emu|loit", ignore_case = TRUE)))) %>%
+  dplyr::select(filename, `222`, Order, filename)
+```
+
+```{r}
+colnames(table_IS)[2] <- "Sulfachloropyridazine"
+
+table_IS %>% ggscatter(x = "Order", y = "Sulfachloropyridazine", add = c("reg.line")) +
+  stat_cor() + ylim(0, 5e3)
+```
+```{r}
+table_IS %>% ggbarplot(x = "Order", y = "Sulfachloropyridazine", xlab = "Run Order", 
+                       ylab = "Peak Area sulfachloropyridazine", title = "Internal Standard Acquisition") +
+  geom_hline(yintercept = mean(table_IS$Sulfadimethoxine, na.rm = TRUE), linetype = "dashed", color = "blue")
+
+cv_is <- sd(table_IS$Sulfachloropyridazine)/mean(table_IS$Sulfachloropyridazine)
+
+#CV is 31,4125144% 
+#CV<30% is considered as good
+```
+
+
+
+```{r}
+# Check features in blanks, blank swabs, qc, and BP with filtering out the outliers
+data_blank <- data_final %>%
+  semi_join(
+    metadata_with_runorder %>% filter(Sample_Type2 == "blank"),
+    by = c("SampleID" = "filename_2")
+  )
+
+data_qc <- data_final %>%
+  semi_join(
+    metadata_with_runorder %>% filter(Sample_Type2 == "QC"),
+    by = c("SampleID" = "filename_2")
+  )
+
+data_swabs <- data_final %>%
+  semi_join(
+    metadata_with_runorder %>% filter(Sample_Type2 == "blank_swabs"),
+    by = c("SampleID" = "filename_2")
+  )
+
+data_BP <- data_final %>%
+  semi_join(
+    metadata_with_runorder %>% filter(Sample_Type2 == "BP"),
+    by = c("SampleID" = "filename_2")
+  )
+
+data_skin <- data_final %>%
+  semi_join(
+    metadata_with_runorder %>% filter(Sample_Type2 == "samples"),
+    by = c("SampleID" = "filename_2")
+  )
+```
+
+
+```{r}
+# Blanks
+blanks_feature_info <- data.frame(Feature = colnames(data_blank)[-1],
+                                  Mean_blank = data_blank %>% column_to_rownames("SampleID") %>% colMeans(), 
+                                  SD_blank =  data_blank %>% column_to_rownames("SampleID") %>% apply(2, sd)) %>%
+  dplyr::mutate(CV_blank = SD_blank/Mean_blank) %>% left_join(annotations, by = c("Feature" = "X.Scan.")) %>% 
+  left_join(info_feature) %>% dplyr::select(Feature, mz, RT, Compound_Name, SpectrumID, 
+                                            Precursor_MZ, Mean_blank, SD_blank, CV_blank) %>% 
+  dplyr::filter(Mean_blank > 0) %>% arrange(desc(Mean_blank))
+
+```
+
+
+
+
+```{r}
+# Six mix
+qc_feature_info <- data.frame(Feature = colnames(data_qc)[-1],
+                                  Mean_qc = data_qc %>% column_to_rownames("SampleID") %>% colMeans(), 
+                                  SD_qc = data_qc %>% column_to_rownames("SampleID") %>% apply(2, sd)) %>%
+  dplyr::mutate(CV_qc = SD_qc/Mean_qc) %>% left_join(annotations, by = c("Feature" = "X.Scan.")) %>% 
+  left_join(info_feature) %>% dplyr::select(Feature, mz, RT, Compound_Name, SpectrumID, 
+                                            Precursor_MZ, Mean_qc, SD_qc, CV_qc) %>% 
+  dplyr::filter(Mean_qc > 0) %>% arrange(desc(Mean_qc))
+```
+```{r}
+# CTLs
+blankswabs_feature_info <- data.frame(Feature = colnames(data_swabs)[-1],
+                                 Mean_ctl = data_swabs %>% column_to_rownames("SampleID") %>% colMeans(), 
+                                 SD_ctl =  data_swabs %>% column_to_rownames("SampleID") %>% apply(2, sd)) %>%
+  dplyr::mutate(CV_ctl = SD_ctl/Mean_ctl) %>% left_join(annotations, by = c("Feature" = "X.Scan.")) %>% 
+  left_join(info_feature) %>% dplyr::select(Feature, mz, RT, Compound_Name, SpectrumID, 
+                                            Precursor_MZ, Mean_ctl, SD_ctl, CV_ctl) %>% 
+  dplyr::filter(Mean_ctl > 0) %>% arrange(desc(Mean_ctl))
+```
+
+
+
+```{r}
+# BP
+BP_feature_info <- data.frame(Feature = colnames(data_BP)[-1],
+                                 Mean_BP = data_BP %>% column_to_rownames("SampleID") %>% colMeans(), 
+                                 SD_BP =  data_BP %>% column_to_rownames("SampleID") %>% apply(2, sd)) %>%
+  dplyr::mutate(CV_BP = SD_BP/Mean_BP) %>% left_join(annotations, by = c("Feature" = "X.Scan.")) %>% 
+  left_join(info_feature) %>% dplyr::select(Feature, mz, RT, Compound_Name, SpectrumID, 
+                                            Precursor_MZ, Mean_BP, SD_BP, CV_BP) %>% 
+  dplyr::filter(Mean_BP > 0) %>% arrange(desc(Mean_BP))
+
+```
+
+
+```{r}
+# Skin
+skin_feature_info <- data.frame(Feature = colnames(data_skin)[-1],
+                                 Mean_skin = data_skin %>% column_to_rownames("SampleID") %>% colMeans(), 
+                                 SD_skin =  data_skin %>% column_to_rownames("SampleID") %>% apply(2, sd)) %>%
+  dplyr::mutate(CV_skin = SD_skin/Mean_skin) %>% left_join(annotations, by = c("Feature" = "X.Scan.")) %>% 
+  left_join(info_feature) %>% dplyr::select(Feature, mz, RT, Compound_Name, SpectrumID, 
+                                            Precursor_MZ, Mean_skin, SD_skin, CV_skin) %>% 
+  dplyr::filter(Mean_skin > 0) %>% arrange(desc(Mean_skin))
+```
+
+
+
+```{r}
+# Features to be removed Skin/Blank < 5 or 10
+feature_to_remove <- blanks_feature_info %>% left_join(skin_feature_info) %>%
+  dplyr::filter(Mean_blank > 0) %>% 
+  dplyr::mutate(skin_Blank = Mean_skin/Mean_blank) %>% 
+  dplyr::filter(skin_Blank < 5 | is.na(skin_Blank))
+
+#42 features that need to be removed
+```
+```{r}
+# Data with blank removal
+data_clean <- data_final %>% dplyr::select(-c(feature_to_remove$Feature)) %>%
+  column_to_rownames("SampleID") %>%
+  select_if(~sum(.) != 0) %>% rownames_to_column("SampleID")
+```
+
+```{r}
+# Features to be removed Skin/QCmix < 5 or 10 
+feature_to_remove_mix <- qc_feature_info %>% left_join(skin_feature_info) %>% 
+  dplyr::filter(Mean_qc > 0) %>% 
+  dplyr::mutate(Skin_Mix = Mean_skin/Mean_qc) %>% 
+  dplyr::filter(Skin_Mix < 5 | is.na(Skin_Mix)) %>% dplyr::filter(!(Feature %in% feature_to_remove$Feature))
+
+#28 features 
+```
+
+```{r}
+# Data with QC mix removal
+data_clean2 <- data_clean %>% dplyr::select(-c(feature_to_remove_mix$Feature))
+
+```
+```{r}
+# Features to be removed Skin/Skin_swabs < 5 or 10 
+feature_to_remove_blankswabs <- blankswabs_feature_info %>% left_join(skin_feature_info) %>% 
+  dplyr::filter(Mean_ctl > 0) %>% 
+  dplyr::mutate(Skin_CTL = Mean_skin/Mean_ctl) %>% 
+  dplyr::filter(Skin_CTL < 5 | is.na(Skin_CTL)) %>% dplyr::filter(!(Feature %in% feature_to_remove_mix$Feature))  %>%  dplyr::filter(!(Feature %in% feature_to_remove$Feature)) #%>% dplyr::filter(!(Feature %in% feature_to_remove_BP$Feature))
+```
+
+
+```{r}
+# Data with removal of blank swabs
+data_clean3 <- data_clean2 %>% dplyr::select(-c(feature_to_remove_blankswabs$Feature))
+
+
+```
+
+```{r}
+# Features to be removed Skin/BP < 5 or 10 
+feature_to_remove_BP <- BP_feature_info %>% left_join(skin_feature_info) %>% 
+  dplyr::filter(Mean_BP > 0) %>% 
+  dplyr::mutate(Skin_BP = Mean_skin/Mean_BP) %>% 
+  dplyr::filter(Skin_BP < 5 | is.na(Skin_BP)) %>% dplyr::filter(!(Feature %in% feature_to_remove_mix$Feature))  %>%  dplyr::filter(!(Feature %in% feature_to_remove$Feature)) %>% dplyr::filter(!(Feature %in% feature_to_remove_blankswabs$Feature))
+
+#868
+```
+
+```{r}
+# Data with BP  removal
+data_clean4 <- data_clean3 %>% dplyr::select(-c(feature_to_remove_BP$Feature))
+
+```
+
+
+```{r}
+library(dplyr)
+
+# Add label for each group of features
+feature_to_remove_labeled <- feature_to_remove %>%
+  mutate(Contaminant_Source = "blank")
+
+feature_to_remove_mix_labeled <- feature_to_remove_mix %>%
+  mutate(Contaminant_Source = "QC_mix")
+
+feature_to_remove_blankswabs_labeled <- feature_to_remove_blankswabs %>%
+  mutate(Contaminant_Source = "blank_swabs")
+
+feature_to_remove_BP_labeled <- feature_to_remove_BP %>%
+  mutate(Contaminant_Source = "BP")
+
+```
+
+```{r}
+# Combine all into one table
+features_to_remove_all <- bind_rows(
+  feature_to_remove_labeled,
+  feature_to_remove_mix_labeled,
+  feature_to_remove_blankswabs_labeled,
+  feature_to_remove_BP_labeled
+) %>%
+  distinct(Feature, Contaminant_Source)  # In case a feature appeared in multiple (rare, but safe to deduplicate)
+
+```
+```{r}
+# Find features that remained (after all cleaning)
+remaining_features <- colnames(data_clean4)
+remaining_features <- remaining_features[remaining_features != "SampleID"]  # Remove SampleID column if still present
+
+# Create a dataframe for skin features
+skin_features_df <- data.frame(
+  Feature = remaining_features,
+  Contaminant_Source = "skin"
+)
+
+```
+
+```{r}
+# Combine removed features (blanks, QC mix, blank swabs, BP) and remaining skin features
+final_feature_source_table <- bind_rows(
+  features_to_remove_all,
+  skin_features_df
+)
+
+```
+
+```{r}
+# Define the color palette for six Sample_Type categories
+sample_type_colors <- c("samples" = "#daa600",  # Blue
+                        "blank" = "#2ca25f",  # Orange
+                        "BP" = "#c00001",
+                        "QC" = "#bcbddc",  # Red
+                        "blank_swabs" = "#247cb9",  # Purple
+                        "wash" = "#8c564b")  # Brown
+```
+
+
+```{r}
+# PCA raw data before removing the features
+PCA_raw <- mixOmics::pca(data_final %>% select_at(vars(-one_of(nearZeroVar(., names = TRUE)))) %>%
+                           column_to_rownames("SampleID"), ncomp = 2, center = TRUE, scale = TRUE)
+PCA_raw_scores <- data.frame(PCA_raw$variates$X) %>% rownames_to_column("SampleID") %>% left_join(metadata_with_runorder, by = c("SampleID" = "filename_2"))
+
+i <- "Sample_Type2"
+
+PCA_raw_plot <- PCA_raw_scores %>%
+  ggscatter(x = "PC1", y = "PC2", color = i, alpha = 0.6,
+            title = paste("PCA of Raw Metabolomics Data by", i, sep = " "),
+            xlab = paste("PC1 (", round(PCA_raw$prop_expl_var$X[1]*100, digits = 1),"%)", sep = ""), 
+            ylab = paste("PC2 (", round(PCA_raw$prop_expl_var$X[2]*100, digits = 1),"%)", sep = ""),
+            ggtheme = theme_classic()) +
+  geom_point(data = PCA_raw_scores %>% group_by((!!sym(i))) %>% 
+               summarise_at(vars(matches("PC")), mean), aes(PC1, PC2, color = (!!sym(i))), size = 4, shape = 8) +
+  theme(plot.title = element_text(size = 10), axis.title = element_text(size = 8),
+        axis.text = element_text(size = 4)) + coord_fixed() +
+  scale_color_manual(values = sample_type_colors)
+
+```
+
+```{r}
+# 3. Save the full layout
+ggsave("../figures/metabolomics/qc/PCA_raw_plot_SampleType2.png",
+       plot = PCA_raw_plot,
+       width = 5, height = 5, dpi = 300)
+
+ggsave("../figures/metabolomics/qc/PCA_raw_plot_SampleType2.svg",
+       plot = PCA_raw_plot,
+       width = 5, height = 5)
+```
+
+```{r}
+data_final_filtered <- data_final %>%
+  column_to_rownames("SampleID") %>%
+  filter(rowSums(.) > 0)
+```
+
+
+```{r}
+# Apply rclr
+data_final_clr <- decostand(data_final_filtered, method = "rclr")
+```
+
+```{r}
+PCA_raw <- mixOmics::pca(data_final_clr, ncomp = 2, center = TRUE, scale = TRUE)
+PCA_raw_scores <- data.frame(PCA_raw$variates$X) %>% rownames_to_column("SampleID") %>% left_join(metadata_with_runorder, by = c("SampleID" = "filename_2"))
+
+i <- "Sample_Type2"
+
+PCA_raw_plot <- PCA_raw_scores %>%
+  ggscatter(x = "PC1", y = "PC2", color = i, alpha = 0.6,
+            title = paste("PCA of rCLR-Transformed Metabolomics Data by", i, sep = " "),
+            xlab = paste("PC1 (", round(PCA_raw$prop_expl_var$X[1]*100, digits = 1),"%)", sep = ""), 
+            ylab = paste("PC2 (", round(PCA_raw$prop_expl_var$X[2]*100, digits = 1),"%)", sep = ""),
+            ggtheme = theme_classic()) +
+  geom_point(data = PCA_raw_scores %>% group_by((!!sym(i))) %>% 
+               summarise_at(vars(matches("PC")), mean), aes(PC1, PC2, color = (!!sym(i))), size = 4, shape = 8) +
+  theme(plot.title = element_text(size = 10), axis.title = element_text(size = 8),
+        axis.text = element_text(size = 4)) + coord_fixed() +
+  scale_color_manual(values = sample_type_colors)
+```
+
+```{r}
+# 3. Save the full layout
+ggsave("../figures/metabolomics/qc/PCA_raw_plot_SampleType2_rclr.png",
+       plot = PCA_raw_plot,
+       width = 5, height = 5, dpi = 300)
+
+ggsave("../figures/metabolomics/qc/PCA_raw_plot_SampleType2_rclr.svg",
+       plot = PCA_raw_plot,
+       width = 5, height = 5)
+```
+
+
+
+```{r}
+# Remove rows with all zeros BEFORE rclr
+data_filtered <- data_clean4 %>%
+  column_to_rownames("SampleID") %>%
+  filter(rowSums(.) > 0)
+
+# Apply rclr
+data_clean_4_clr <- decostand(data_filtered, method = "rclr")
+```
+
+
+```{r}
+# PCA
+PCA_whole <- mixOmics::pca(data_clean_4_clr, ncomp = 2, center = TRUE, scale = TRUE)
+PCA_whole_scores <- data.frame(PCA_whole$variates$X) %>% 
+  rownames_to_column("SampleID")  %>% left_join(metadata_with_runorder, by = c("SampleID" = "filename_2"))
+#PCA_whole_scores <- data.frame(PCA_whole$variates$X) %>% rownames_to_column("SampleID") %>% left_join(metadata_final)
+i <- "Sample_Type2"
+
+PCA_plot <- PCA_whole_scores %>%
+  ggscatter(x = "PC1", y = "PC2", color = i, alpha = 0.6,
+            title = paste("PCA - Skin Metabolome - rclr transformed data"),
+            xlab = paste("PC1 (", round(PCA_whole$prop_expl_var$X[1]*100, digits = 1),"%)", sep = ""), 
+            ylab = paste("PC2 (", round(PCA_whole$prop_expl_var$X[2]*100, digits = 1),"%)", sep = ""),
+            ggtheme = theme_classic()) +
+  geom_point(data = PCA_whole_scores %>% group_by((!!sym(i))) %>% 
+               summarise_at(vars(matches("PC")), mean), aes(PC1, PC2, color = (!!sym(i))), size = 4, shape = 8) +
+  theme(plot.title = element_text(size = 10), axis.title = element_text(size = 8),
+        axis.text = element_text(size = 4)) + coord_fixed()  +
+  scale_color_manual(values = sample_type_colors)
+```
+
+
+```{r}
+# Remove plastic contamination
+feature_check <- info_feature %>% dplyr::select(1:3) %>% 
+  dplyr::filter(Feature %in% colnames(data_clean4)) %>% as_tibble()
+colnames(feature_check) <- c("peak_id", "mz", "rt")
+feature_check$mz <- as.double(feature_check$mz)
+feature_check$rt <- as.double(feature_check$rt)
+```
+
+```{r}
+# for 1 CTL sample 
+feature_pool <- data_clean4 %>% 
+  dplyr::filter(SampleID == "blank_GG11_01_1689") %>% column_to_rownames("SampleID") %>%
+  t() %>% as.data.frame() %>% rownames_to_column("peak_id")
+
+feature_check_pool <- feature_check %>% left_join(feature_pool)
+
+feature_check_pool$peak_id <- as.integer(feature_check_pool$peak_id)
+colnames(feature_check_pool)[4] <- "intensity"
+```
+
+```{r}
+# Remove PEGs
+peak_table_PEG <- detectHomologues(feature_check_pool, mz_steps = c(44.02628),
+                                   rt_min = 0.1, rt_max = 100, ppm_tolerance = 10, 
+                                   min_series_length = 5, search_mode = "targeted", 
+                                   step_mode = "increment", verbose = TRUE)
+
+plotAnnotatedStatic(peak_table_PEG)
+```
+
+```{r}
+
+sdb <- sdbCreate(peak_table_PEG, sample_origin = "data")
+
+
+```
+
+```{r}
+# Remove untargeted 
+peak_table_untargeted <- detectHomologues(feature_check_pool, mz_min = 10, mz_max = 50, 
+                                          rt_min = 0.5, rt_max = 100, ppm_tolerance = 5, 
+                                          min_series_length = 5, search_mode = "untargeted", 
+                                          step_mode = "increment", verbose = TRUE)
+```
+
+```{r}
+#if running targeted and untargeted 
+# Combine tables
+overlapping_ids <- sdbCheckContained(sdb, peak_table_untargeted, ppm_tolerance = 0.5, rt_tolerance = 0.5)
+sdb <- sdbPush(sdb, filter(peak_table_untargeted, !(homologue_id %in% overlapping_ids)))
+```
+
+```{r}
+sdb$sample_peak_id <- as.character(sdb$sample_peak_id)
+features_contaminat <- info_feature_complete %>% dplyr::filter(Feature %in% sdb$sample_peak_id)
+
+data_clean5 <- data_clean4 %>% dplyr::select(-c(sdb$sample_peak_id))
+
+```
+
+
+```{r}
+# PCA
+PCA_raw <- mixOmics::pca(data_clean5 %>% select_at(vars(-one_of(nearZeroVar(., names = TRUE)))) %>%
+                           column_to_rownames("SampleID"), ncomp = 2, center = TRUE, scale = TRUE)
+PCA_raw_scores <- data.frame(PCA_raw$variates$X) %>% 
+  rownames_to_column("SampleID") %>% left_join(metadata_with_runorder, by = c("SampleID" = "filename_2"))
+
+i <- "Sample_Type2"
+
+PCA_raw_plot <- PCA_raw_scores %>%
+  ggscatter(x = "PC1", y = "PC2", color = i, alpha = 0.6,
+            title = paste("PCA - Skin Metabolome", i, sep = " "),
+            xlab = paste("PC1 (", round(PCA_raw$prop_expl_var$X[1]*100, digits = 1),"%)", sep = ""), 
+            ylab = paste("PC2 (", round(PCA_raw$prop_expl_var$X[2]*100, digits = 1),"%)", sep = ""),
+            ggtheme = theme_classic()) +
+  geom_point(data = PCA_raw_scores %>% group_by((!!sym(i))) %>% 
+               summarise_at(vars(matches("PC")), mean), aes(PC1, PC2, color = (!!sym(i))), size = 4, shape = 8) +
+  theme(plot.title = element_text(size = 10), axis.title = element_text(size = 8),
+        axis.text = element_text(size = 4)) + coord_fixed()+
+  scale_color_manual(values = sample_type_colors)
+
+```
+
+```{r}
+# Keep only samples
+data_sample <- data_clean5 %>% 
+   dplyr::filter(!(str_detect(SampleID, regex("blank|wash|QC|emu|loit", ignore_case = TRUE)))) %>% 
+  column_to_rownames("SampleID") %>%
+  filter(rowSums(.) > 0)%>%  
+  select_at(vars(-one_of(nearZeroVar(., names = TRUE)))) %>% rownames_to_column("SampleID") 
+```
+
+```{r}
+# after filtering out the contaminant featuers
+filtered_data_sample_skin_feature_info <- data.frame(Feature = colnames(data_sample)[-1]) %>% left_join(annotations, by = c("Feature" = "X.Scan.")) %>% 
+  left_join(info_feature) %>% dplyr::select(Feature, mz, RT, Compound_Name, SpectrumID) 
+```
+
+
+
+```{r}
+fill_colors <- c(
+  "Forehead" = "#ffc65e",   # warm amber
+  "Nose"     = "#5693c7",   # soft blue
+  "Cheek"    = "#8ccd87",   # light green
+  "Ear"      = "#9dcfcf",   # muted teal (cooler, pairs with Nose & Cheek)
+  "Temple"   = "#f29d1e",   # bold warm orange (near Forehead)
+  "Chin"     = "#bfa6d0",   # lavender (softer contrast after orange)
+  "Neck"     = "#d3d3d3"    # neutral gray (least visually dominant, good for last)
+)
+
+border_colors <- c(
+  "Forehead" = "#e0a846",  # darker amber
+  "Nose"     = "#3a6b99",  # darker blue
+  "Cheek"    = "#4a7a4f",  # deeper green
+  "Ear"      = "#6ca5a5",  # darker teal
+  "Temple"   = "#c97e0f",  # deeper warm orange
+  "Chin"     = "#9989ac",  # deeper lavender
+  "Neck"     = "#a9a9a9"   # medium gray
+)
+```
+
+
+```{r}
+data_sample_clr <- decostand(data_sample %>% column_to_rownames("SampleID"), method = "rclr")
+```
+```{r}
+# PCA
+PCA_whole <- mixOmics::pca(data_sample_clr, ncomp = 2, center = TRUE, scale = TRUE)
+PCA_whole_scores <- data.frame(PCA_whole$variates$X) %>% 
+  rownames_to_column("SampleID") %>% left_join(metadata_with_runorder, by = c("SampleID" = "filename_2"))
+PCA_whole_scores$Face_site <- factor(PCA_whole_scores$Face_site, levels=c("Forehead", "Nose", "Cheek", "Temple","Chin","Ear","Neck"))
+
+i <- "Face_site"
+
+
+```
+
+
+
+```{r}
+PCA_plot_Face_site <- PCA_whole_scores %>%
+  ggplot(aes(x = PC1, y = PC2, fill = !!sym(i), color = !!sym(i))) +
+  geom_point(shape = 21, size = 3, stroke = 0.6, alpha = 0.6) +
+  geom_point(
+    data = PCA_whole_scores %>%
+      group_by((!!sym(i))) %>%
+      summarise(across(matches("PC"), mean)),
+    aes(x = PC1, y = PC2, fill = !!sym(i), color = !!sym(i)),
+    shape = 8, size = 4, inherit.aes = FALSE
+  ) +
+  scale_fill_manual(name = "Face site", values = fill_colors) +  # set title here
+  scale_color_manual(name = "Face site", values = border_colors) +  # match title
+  labs(
+    title = "PCA of RCLR-Transformed Metabolite Features by Face Site",
+    x = paste0("PC1 (", round(PCA_whole$prop_expl_var$X[1]*100, 1), "%)"),
+    y = paste0("PC2 (", round(PCA_whole$prop_expl_var$X[2]*100, 1), "%)")
+  ) +
+  coord_fixed() +
+  theme_classic(base_size = 10) +
+  theme(
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 11),
+    plot.title = element_text(size = 15), 
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 11)
+  )
+
+```
+
+
+```{r}
+# PERMANOVA
+dist_metabolites <- vegdist(data_sample_clr, method = "euclidean")
+disper_donor <- betadisper(dist_metabolites, PCA_whole_scores$Subject_ID)
+
+#significant variation between the groups
+anova(disper_donor)
+permanova <- adonis2(dist_metabolites ~ PCA_whole_scores$Subject_ID + PCA_whole_scores$Face_site, PCA_whole_scores, na.action = na.omit, by="margin")
+```
+
+# plot with Permanova
+
+```{r}
+face_row <- permanova[2, ]
+r2 <- round(face_row$R2 * 100, 1)
+f_val <- round(face_row$F, 2)
+p_val <- format(face_row$`Pr(>F)`, digits = 3, scientific = TRUE)
+
+label_text <- paste0("PERMANOVA\nR² = ", r2, "%\nF = ", f_val, "\np = ", p_val)
+
+```
+
+```{r}
+PCA_plot_Face_site <- PCA_whole_scores %>%
+  ggplot(aes(x = PC1, y = PC2, fill = !!sym(i), color = !!sym(i))) +
+  geom_point(shape = 21, size = 3, stroke = 0.6, alpha = 0.6) +
+  geom_point(
+    data = PCA_whole_scores %>%
+      group_by((!!sym(i))) %>%
+      summarise(across(matches("PC"), mean)),
+    aes(x = PC1, y = PC2, fill = !!sym(i), color = !!sym(i)),
+    shape = 8, size = 4, inherit.aes = FALSE
+  ) +
+  scale_fill_manual(name = "Face site", values = fill_colors) +  # set title here
+  scale_color_manual(name = "Face site", values = border_colors) +  # match title
+  labs(
+    title = "PCA of RCLR-Transformed Untargeted Metabolite Features by Face Site", #PCA of RCLR-Transformed Metabolite Features by Face Site
+    x = paste0("PC1 (", round(PCA_whole$prop_expl_var$X[1]*100, 1), "%)"),
+    y = paste0("PC2 (", round(PCA_whole$prop_expl_var$X[2]*100, 1), "%)")
+  ) +
+  coord_fixed() +
+  theme_classic(base_size = 10) +
+  theme(
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 11),
+    plot.title = element_text(size = 15), 
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 11)
+  )+ annotate("text", 
+    x = Inf, y = Inf,
+    label = label_text,
+    hjust = 1.1, vjust = 1.2, size = 3.8
+  )
+
+
+```
+
+# leave out Neck, Chin, Temple, Ear ONLY FACE NOSE CHEEK
+```{r}
+# First join metadata and filter to include only relevant face sites
+metadata_filtered <- metadata_with_runorder %>%
+  filter(Face_site %in% c("Forehead", "Nose", "Cheek"))
+
+# Then subset the data_sample accordingly
+data_sample_filtered <- data_sample %>%
+  filter(SampleID %in% metadata_filtered$filename_2)
+
+# CLR transformation on filtered data
+data_sample_clr <- decostand(data_sample_filtered %>% column_to_rownames("SampleID"), method = "rclr")
+
+# Run PCA
+PCA_whole <- mixOmics::pca(data_sample_clr, ncomp = 2, center = TRUE, scale = TRUE)
+
+# Join PCA scores with filtered metadata
+PCA_whole_scores <- data.frame(PCA_whole$variates$X) %>% 
+  rownames_to_column("SampleID") %>%
+  left_join(metadata_filtered, by = c("SampleID" = "filename_2"))
+
+# Set Face_site as ordered factor
+PCA_whole_scores$Face_site <- factor(PCA_whole_scores$Face_site, levels = c("Forehead", "Nose", "Cheek"))
+
+i <- "Face_site"
+
+
+```
+
+
+```{r}
+PCA_plot_Face_site <- PCA_whole_scores %>%
+  ggplot(aes(x = PC1, y = PC2, fill = !!sym(i), color = !!sym(i))) +
+  geom_point(shape = 21, size = 3, stroke = 0.6, alpha = 0.6) +
+  geom_point(
+    data = PCA_whole_scores %>%
+      group_by((!!sym(i))) %>%
+      summarise(across(matches("PC"), mean)),
+    aes(x = PC1, y = PC2, fill = !!sym(i), color = !!sym(i)),
+    shape = 8, size = 4, inherit.aes = FALSE
+  ) +
+  scale_fill_manual(name = "Face site", values = fill_colors) +  # set title here
+  scale_color_manual(name = "Face site", values = border_colors) +  # match title
+  labs(
+    title = "PCA of RCLR-Transformed Metabolite Features by Face Site",
+    x = paste0("PC1 (", round(PCA_whole$prop_expl_var$X[1]*100, 1), "%)"),
+    y = paste0("PC2 (", round(PCA_whole$prop_expl_var$X[2]*100, 1), "%)")
+  ) +
+  coord_fixed() +
+  theme_classic(base_size = 10) +
+  theme(
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 11),
+    plot.title = element_text(size = 15), 
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 11)
+  )
+
+```
+
+```{r}
+# PERMANOVA
+dist_metabolites <- vegdist(data_sample_clr, method = "euclidean")
+disper_donor <- betadisper(dist_metabolites, PCA_whole_scores$Subject_ID)
+
+#significant variation between the groups
+anova(disper_donor)
+permanova <- adonis2(dist_metabolites ~ PCA_whole_scores$Subject_ID + PCA_whole_scores$Face_site, PCA_whole_scores, na.action = na.omit, by="margin")
+```
+
+# plot with Permanova
+
+```{r}
+face_row <- permanova[2, ]
+r2 <- round(face_row$R2 * 100, 1)
+f_val <- round(face_row$F, 2)
+p_val <- format(face_row$`Pr(>F)`, digits = 3, scientific = TRUE)
+
+label_text <- paste0("PERMANOVA\nR² = ", r2, "%\nF = ", f_val, "\np = ", p_val)
+
+```
+
+```{r}
+# 1. Create named vector for labels with counts
+# 1. Create named vector for legend labels with Face_site as name and proper label
+face_site_counts_df <- PCA_whole_scores %>%
+  filter(!is.na(!!sym(i))) %>%
+  count(face_site = !!sym(i)) %>%
+  mutate(label = paste0(face_site, " (n = ", n, ")"))
+
+# 2. Create a named vector: names = face_site, values = label
+face_site_labels <- setNames(face_site_counts_df$label, face_site_counts_df$face_site)
+
+
+PCA_whole_scores[[i]] <- factor(PCA_whole_scores[[i]], levels = names(face_site_labels))
+# 3. Now update the plot with manual legend labels
+PCA_plot_Face_site <- PCA_whole_scores %>%
+  ggplot(aes(x = PC1, y = PC2, fill = !!sym(i), color = !!sym(i))) +
+  geom_point(shape = 21, size = 3, stroke = 0.6, alpha = 0.6) +
+  geom_point(
+    data = PCA_whole_scores %>%
+      group_by((!!sym(i))) %>%
+      summarise(across(matches("PC"), mean), .groups = "drop"),
+    aes(x = PC1, y = PC2, fill = !!sym(i), color = !!sym(i)),
+    shape = 8, size = 4, inherit.aes = FALSE
+  ) +
+  scale_fill_manual(
+    name = "Face site",
+    values = fill_colors,
+    labels = face_site_labels
+  ) +
+  scale_color_manual(
+    name = "Face site",
+    values = border_colors,
+    labels = face_site_labels
+  ) +
+  labs(
+    title = "PCA of RCLR-Transformed Untargeted Metabolite Features by Face Site",
+    x = paste0("PC1 (", round(PCA_whole$prop_expl_var$X[1]*100, 1), "%)"),
+    y = paste0("PC2 (", round(PCA_whole$prop_expl_var$X[2]*100, 1), "%)")
+  ) +
+  coord_fixed() +
+  theme_classic(base_size = 10) +
+  theme(
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 11),
+    plot.title = element_text(size = 15), 
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 11)
+  ) +
+  annotate("text", 
+    x = Inf, y = Inf,
+    label = label_text,
+    hjust = 1.1, vjust = 1.2, size = 3.8
+  )
+
+```
+
+
+```{r}
+
+i <- "Subject_ID"  # change coloring to Subject_ID
+
+PCA_plot_subject <- PCA_whole_scores %>%
+  ggscatter(x = "PC1", y = "PC2", color = i, alpha = 0.6,
+            title = "PCA of RCLR-Transformed Metabolite Features by Subject",
+            xlab = paste("PC1 (", round(PCA_whole$prop_expl_var$X[1]*100, digits = 1), "%)", sep = ""), 
+            ylab = paste("PC2 (", round(PCA_whole$prop_expl_var$X[2]*100, digits = 1), "%)", sep = ""),
+            ggtheme = theme_classic()) +
+  geom_point(data = PCA_whole_scores %>%
+               group_by((!!sym(i))) %>%
+               summarise(across(matches("PC"), mean)), 
+             aes(PC1, PC2, color = (!!sym(i))), size = 4, shape = 8) +
+  theme(plot.title = element_text(size = 15), 
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 12)) +
+  coord_fixed() + scale_color_viridis_d(option = "turbo")  # vibrant and high-contrast
+
+
+```
+
+```{r}
+library(ggrepel)
+
+i <- "Subject_ID"
+
+PCA_plot_subject <- ggplot(PCA_whole_scores, aes(x = PC1, y = PC2, color = !!sym(i), group = !!sym(i))) +
+  geom_point(alpha = 0.6) +
+  geom_path(alpha = 0.5, linewidth = 0.6) +  # lines connecting points from same subject
+  geom_text_repel(
+    data = PCA_whole_scores %>%
+      group_by((!!sym(i))) %>%
+      summarise(across(c(PC1, PC2), mean), .groups = "drop"),
+    aes(label = !!sym(i), x = PC1, y = PC2, color = !!sym(i)),
+    size = 3, show.legend = FALSE, max.overlaps = Inf
+  ) +
+  scale_color_viridis_d(option = "turbo") +
+  coord_fixed() +
+  labs(
+    title = "PCA of RCLR-Transformed Metabolites by Subject",
+    x = paste0("PC1 (", round(PCA_whole$prop_expl_var$X[1] * 100, 1), "%)"),
+    y = paste0("PC2 (", round(PCA_whole$prop_expl_var$X[2] * 100, 1), "%)")
+  ) +
+  theme_classic(base_size = 12) +
+  theme(legend.position = "none")
+
+```
+
+```{r}
+# 3. Save the full layout
+ggsave("../figures/supplementary/suppl_fig10.png",
+       plot = PCA_plot_subject,
+       width = 9, height = 9, dpi = 300)
+
+ggsave("../figures/supplementary/suppl_fig10.svg",
+       plot = PCA_plot_subject,
+       width = 9, height = 9)
+```
+
+
+
+```{r}
+q <- quantile(metadata_with_runorder$sebum, probs = c(0.25, 0.75), na.rm = TRUE)
+low_thresh <- q[1]
+high_thresh <- q[2]
+
+# 2. Assign sebum groups
+metadata_with_runorder <- metadata_with_runorder %>%
+  mutate(sebum_group = case_when(
+    sebum < low_thresh ~ "low",
+    sebum >= low_thresh & sebum <= high_thresh ~ "medium",
+    sebum > high_thresh ~ "high"
+  ))
+
+```
+
+
+
+```{r}
+# RCLR transformation
+data_sample_clr <- decostand(data_sample %>% column_to_rownames("SampleID"), method = "rclr")
+```
+
+```{r}
+# PCA
+PCA_whole <- mixOmics::pca(data_sample_clr, ncomp = 2, center = TRUE, scale = TRUE)
+PCA_whole_scores <- data.frame(PCA_whole$variates$X) %>% 
+  rownames_to_column("SampleID") %>% left_join(metadata_with_runorder, by = c("SampleID" = "filename_2"))
+
+```
+
+```{r}
+# Example thresholds based on quantiles
+q <- quantile(metadata_with_runorder$sebum, probs = c(0.25, 0.75), na.rm = TRUE)
+low_thresh <- round(q[1], 1)
+high_thresh <- round(q[2], 1)
+
+# Set factor levels manually so Low, Medium, High appear in the correct order
+PCA_whole_scores$sebum_group <- factor(PCA_whole_scores$sebum_group, 
+                                       levels = c("low", "medium", "high"))
+
+# Set i
+i <- "sebum_group"
+
+# Create PCA plot
+PCA_plot_sebum <- PCA_whole_scores %>%
+  ggscatter(x = "PC1", y = "PC2", color = i, alpha = 0.6,
+            title = "PCA of RCLR-Transformed Metabolite Features by Sebum Level",
+            xlab = paste("PC1 (", round(PCA_whole$prop_expl_var$X[1]*100, 1), "%)", sep = ""), 
+            ylab = paste("PC2 (", round(PCA_whole$prop_expl_var$X[2]*100, 1), "%)", sep = ""),
+            ggtheme = theme_classic()) +
+  
+  geom_point(data = PCA_whole_scores %>%
+               group_by((!!sym(i))) %>%
+               summarise(across(matches("PC"), mean)), 
+             aes(PC1, PC2, color = (!!sym(i))), size = 4, shape = 8) +
+  
+  scale_color_manual(
+    name = "Sebum Group",
+    values = c("low" = "#4575b4", "medium" = "#fee0b6", "high" = "#e08214"),
+    labels = c(
+      low = paste0("Low (< ", low_thresh, " µg/cm²)"),
+      medium = paste0("Medium (", low_thresh, "–", high_thresh, " µg/cm²)"),
+      high = paste0("High (> ", high_thresh, " µg/cm²)")
+    )
+  ) +
+  
+  theme(plot.title = element_text(size = 15), 
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 11)) +
+  
+  coord_fixed()
+
+```
+
+
+
+
+```{r}
+# PERMANOVA
+dist_metabolites <- vegdist(data_sample_clr, method = "euclidean")
+disper_donor <- betadisper(dist_metabolites, PCA_whole_scores$Subject_ID)
+
+#significant variation between the groups
+anova(disper_donor)
+permanova_sebumgroup <- adonis2(dist_metabolites ~ PCA_whole_scores$Subject_ID + PCA_whole_scores$sebum_group, PCA_whole_scores, na.action = na.omit, by="margin")
+```
+
+
+```{r}
+sebum_row <- permanova_sebumgroup[2, ]
+r2 <- round(sebum_row$R2 * 100, 1)
+f_val <- round(sebum_row$F, 2)
+p_val <- format(sebum_row$`Pr(>F)`, digits = 3, scientific = TRUE)
+
+label_text <- paste0("PERMANOVA\nR² = ", r2, "%\nF = ", f_val, "\np = ", p_val)
+
+```
+
+#Plot with Permanova
+
+```{r}
+# Example thresholds based on quantiles
+q <- quantile(metadata_with_runorder$sebum, probs = c(0.25, 0.75), na.rm = TRUE)
+low_thresh <- round(q[1], 1)
+high_thresh <- round(q[2], 1)
+
+# Set factor levels manually so Low, Medium, High appear in the correct order
+PCA_whole_scores$sebum_group <- factor(PCA_whole_scores$sebum_group, 
+                                       levels = c("low", "medium", "high"))
+
+# Set i
+i <- "sebum_group"
+
+# Create PCA plot
+PCA_plot_sebum <- PCA_whole_scores %>%
+  ggscatter(x = "PC1", y = "PC2", color = i, alpha = 0.6,
+            title = "PCA of RCLR-Transformed Untargeted Metabolite Features by Sebum Level", #"PCA of RCLR-Transformed Metabolite Features by Sebum Level"
+            xlab = paste("PC1 (", round(PCA_whole$prop_expl_var$X[1]*100, 1), "%)", sep = ""), 
+            ylab = paste("PC2 (", round(PCA_whole$prop_expl_var$X[2]*100, 1), "%)", sep = ""),
+            ggtheme = theme_classic()) +
+  
+  geom_point(data = PCA_whole_scores %>%
+               group_by((!!sym(i))) %>%
+               summarise(across(matches("PC"), mean)), 
+             aes(PC1, PC2, color = (!!sym(i))), size = 4, shape = 8) +
+  
+  scale_color_manual(
+    name = "Sebum Group",
+    values = c("low" = "#4575b4", "medium" = "#fee0b6", "high" = "#e08214"),
+    labels = c(
+      low = paste0("Low (< ", low_thresh, " µg/cm²)"),
+      medium = paste0("Medium (", low_thresh, "–", high_thresh, " µg/cm²)"),
+      high = paste0("High (> ", high_thresh, " µg/cm²)")
+    )
+  ) +
+  
+  theme(plot.title = element_text(size = 15), 
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 11)) +
+  
+  coord_fixed()+ annotate("text", 
+    x = Inf, y = Inf,
+    label = label_text,
+    hjust = 1.1, vjust = 1.2, size = 3.8
+  )
+
+```
+
+#including counts per group
+
+```{r}
+# 2. Create legend labels with n + thresholds
+sebum_group_counts_df <- PCA_whole_scores %>%
+  filter(!is.na(sebum_group)) %>%
+  count(sebum_group) %>%
+  mutate(
+    label = case_when(
+      sebum_group == "low" ~ paste0("Low (< ", low_thresh, " µg/cm², n = ", n, ")"),
+      sebum_group == "medium" ~ paste0("Medium (", low_thresh, "–", high_thresh, " µg/cm², n = ", n, ")"),
+      sebum_group == "high" ~ paste0("High (> ", high_thresh, " µg/cm², n = ", n, ")"),
+      TRUE ~ as.character(sebum_group)
+    )
+  )
+
+# 3. Create named vector for legend
+sebum_group_labels <- setNames(sebum_group_counts_df$label, sebum_group_counts_df$sebum_group)
+
+# 4. Set factor level order
+PCA_whole_scores$sebum_group <- factor(PCA_whole_scores$sebum_group, levels = c("low", "medium", "high"))
+
+# 5. Generate PCA plot
+PCA_plot_sebum <- PCA_whole_scores %>%
+  ggplot(aes(x = PC1, y = PC2, fill = sebum_group, color = sebum_group)) +
+  geom_point(shape = 21, size = 3, stroke = 0.6, alpha = 0.6) +
+  geom_point(
+    data = PCA_whole_scores %>%
+      group_by(sebum_group) %>%
+      summarise(across(matches("PC"), mean), .groups = "drop"),
+    aes(x = PC1, y = PC2, fill = sebum_group, color = sebum_group),
+    shape = 8, size = 4, inherit.aes = FALSE
+  ) +
+  scale_fill_manual(
+    name = "Sebum Group",
+    values = c("low" = "#4575b4", "medium" = "#fee0b6", "high" = "#e08214"),
+    labels = sebum_group_labels
+  ) +
+  scale_color_manual(
+    name = "Sebum Group",
+    values = c("low" = "#4575b4", "medium" = "#fee0b6", "high" = "#e08214"),
+    labels = sebum_group_labels
+  ) +
+  labs(
+    title = "PCA of RCLR-Transformed Untargeted Metabolite Features by Sebum Level",
+    x = paste0("PC1 (", round(PCA_whole$prop_expl_var$X[1] * 100, 1), "%)"),
+    y = paste0("PC2 (", round(PCA_whole$prop_expl_var$X[2] * 100, 1), "%)")
+  ) +
+  coord_fixed() +
+  theme_classic(base_size = 10) +
+  theme(
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 11),
+    plot.title = element_text(size = 15),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 11)
+  ) +
+  annotate("text", 
+    x = Inf, y = Inf,
+    label = label_text,
+    hjust = 1.1, vjust = 1.2, size = 3.8
+  )
+
+```
+
+#Figure 4b
+```{r}
+features_skin <- skin_feature_info %>% filter(Mean_skin > 0) %>% pull(Feature)
+features_BP <- BP_feature_info %>% filter(Mean_BP > 0) %>% pull(Feature)
+features_QC <- qc_feature_info %>% filter(Mean_qc > 0) %>% pull(Feature)
+features_blank <- blanks_feature_info %>% filter(Mean_blank > 0) %>% pull(Feature)
+features_blankswabs <- blankswabs_feature_info %>% filter(Mean_ctl > 0) %>% pull(Feature)
+
+```
+
+```{r}
+
+
+feature_lists <- list(
+  Skin = features_skin,
+  BP = features_BP,
+  QC = features_QC,
+  Blank = features_blank,
+  "Blank Swabs" = features_blankswabs
+)
+
+
+```
+
+```{r}
+library(eulerr)
+
+# Rename the lists
+
+feature_lists_named <- feature_lists
+names(feature_lists_named) <- c(
+  "Skin",
+  "Personal Care Ref",     # or whatever term you prefer
+  "Quality Control",
+  "Blank",
+  "Blank Swabs"
+)
+
+# Fit Venn diagram
+fit <- euler(feature_lists_named)
+
+# Plot
+venn_plot <- plot(fit,
+     fills = c(
+       "Skin" = "#daa600",
+       "Personal Care Ref" = "#c00001",
+       "Quality Control" = "#bcbddc",
+       "Blank" = "#2ca25f",
+       "Blank Swabs" = "#247cb9"
+     ),
+     #labels = list(font = 2),
+     quantities = TRUE,
+     legend = list(title = "Sample type", cex = 1),
+     main = list(label = "Overlap of Untargeted Metabolite Features Across Sample Types", cex = 1.2)
+)
+#Overlap of Detected Features Across Sample Types
+```
+
+```{r}
+venn_plot2 <- ggarrange(
+  venn_plot, NULL,
+  ncol = 2,
+  nrow = 1,
+  labels = c("b", "c"),
+  common.legend = FALSE ,font.label = list(size = 18, face = "bold"), align ="hv"  # adjust size and style
+)
+```
+
+
+
+```{r}
+venn_pca <- ggarrange(
+  PCA_plot_Face_site, PCA_plot_sebum, 
+  ncol = 2,
+  nrow = 1,
+  labels = c("d", "e"),
+  common.legend = FALSE ,font.label = list(size = 18, face = "bold"), align ="hv"  # adjust size and style
+)
+```
+
+```{r}
+top_grid <- ggarrange(heatmap_transposed,venn_plot2, venn_pca,
+  ncol = 1, nrow = 3,
+  labels = c("a", "", ""), # no label on boxplot_fg as it already has f/g inside
+  heights = c(0.85,1, 1),font.label = list(size = 18, face = "bold")  # adjust size and style
+  # optional: give a bit more room to the bottom row
+)
+```
+
+```{r}
+# 3. Save the full layout
+ggsave("../figures/main/Figure4.png", #venn_sebum_3.png
+       plot = top_grid,
+       width = 16, height = 16, dpi = 300)
+
+ggsave("../figures/main/Figure4.svg", #venn_sebum_3.svg
+       plot = top_grid,
+       width = 16, height = 16)
+```
+
+
+
+#Run PCA / PLSDA on only extreme cases of sebum concentration (7ug/cm^2 < and > 30 ug/cm^2); filtering of the table 
+```{r}
+# Filter and pull the filename2 values
+extreme_filenames <- metadata_with_runorder_clean %>%
+  dplyr::filter(sebum < 3.5 | sebum > 16.9) %>%  #7 and 20
+  dplyr::pull(filename_2)
+#Face_site == "Forehead", 
+# View the result
+extreme_filenames
+
+```
+
+```{r}
+#ALTERNATIVE: FILTER OUT THOSE SAMPLES that are related to forehead, nose, cheek
+
+extreme_filenames <- metadata_with_runorder_clean %>%
+  dplyr::filter(
+    (sebum < 3.5 | sebum > 16.9) &
+    Face_site %in% c("Forehead", "Nose", "Cheek")
+  ) %>%
+  dplyr::pull(filename_2)
+
+# View result
+extreme_filenames
+
+```
+
+```{r}
+# Filter data_sample to keep only the extreme samples
+data_sample_extreme <- data_sample %>%
+  dplyr::filter(SampleID %in% extreme_filenames)
+
+# View the result
+data_sample_extreme
+
+```
+
+
+```{r}
+# First, create the new column based on sebum values
+metadata_with_runorder_clean <- metadata_with_runorder_clean %>%
+  dplyr::mutate(
+    Extreme_Sebum = dplyr::case_when(
+      filename_2 %in% data_sample_extreme$SampleID & sebum < 3.5 ~ "Low", #7
+      filename_2 %in% data_sample_extreme$SampleID & sebum > 16.9 ~ "High", #20
+      TRUE ~ NA_character_  # Keep NA for all others
+    )
+  )
+
+# View result
+metadata_with_runorder_clean
+
+```
+```{r}
+# Count number of Low and High in Extreme_Sebum
+extreme_sebum_counts <- metadata_with_runorder_clean %>%
+  dplyr::filter(!is.na(Extreme_Sebum)) %>%
+  dplyr::count(Extreme_Sebum)
+
+# View result
+extreme_sebum_counts
+
+```
+```{r}
+# Assuming extreme_sebum_counts already exists
+low_n <- extreme_sebum_counts %>% filter(Extreme_Sebum == "Low") %>% pull(n)
+high_n <- extreme_sebum_counts %>% filter(Extreme_Sebum == "High") %>% pull(n)
+
+```
+
+
+```{r}
+# RCLR transformation
+data_sample_extreme_clr <- decostand(data_sample_extreme %>% column_to_rownames("SampleID"), method = "rclr")
+```
+```{r}
+# PCA
+PCA_whole <- mixOmics::pca(data_sample_extreme_clr, ncomp = 2, center = TRUE, scale = TRUE)
+PCA_whole_scores <- data.frame(PCA_whole$variates$X) %>% 
+  rownames_to_column("SampleID") %>% left_join(metadata_with_runorder_clean, by = c("SampleID" = "filename_2"))
+#PCA_whole_scores$Face_site <- factor(PCA_whole_scores$Face_site, levels=c("Forehead", "Nose", "Cheek", "Temple","Chin","Ear","Neck"))
+
+i <- "Extreme_Sebum"
+
+
+```
+
+
+#correct counts
+```{r}
+# Count number of Low and High in Extreme_Sebum
+sebum_counts <- PCA_whole_scores %>%
+  dplyr::filter(!is.na(Extreme_Sebum)) %>%
+  dplyr::count(Extreme_Sebum)
+
+# View result
+sebum_counts
+```
+
+```{r}
+# Assuming extreme_sebum_counts already exists
+low_n <- sebum_counts %>% filter(Extreme_Sebum == "Low") %>% pull(n)
+medium_n <-  sebum_counts %>% filter(Extreme_Sebum == "Medium") %>% pull(n)
+high_n <- sebum_counts %>% filter(Extreme_Sebum == "High") %>% pull(n)
+```
+
+```{r}
+# PERMANOVA
+dist_metabolites <- vegdist(data_sample_extreme_clr, method = "euclidean")
+disper_donor <- betadisper(dist_metabolites, PCA_whole_scores$Subject_ID)
+
+#significant variation between the groups
+anova(disper_donor)
+permanova_sebumgroup <- adonis2(dist_metabolites ~ PCA_whole_scores$Subject_ID + PCA_whole_scores$Extreme_Sebum, PCA_whole_scores, na.action = na.omit, by="margin")
+```
+
+```{r}
+sebum_row <- permanova_sebumgroup[2, ]
+r2 <- round(sebum_row$R2 * 100, 1)
+f_val <- round(sebum_row$F, 2)
+p_val <- format(sebum_row$`Pr(>F)`, digits = 3, scientific = TRUE)
+
+label_text <- paste0("PERMANOVA\nR² = ", r2, "%\nF = ", f_val, "\np = ", p_val)
+
+```
+
+```{r}
+# Create PCA plot
+PCA_plot_sebum_extreme <- PCA_whole_scores %>%
+  ggscatter(x = "PC1", y = "PC2", color = i, alpha = 0.6,
+            title = "PCA of RCLR-Transformed Metabolite Features by Sebum Level",
+            xlab = paste("PC1 (", round(PCA_whole$prop_expl_var$X[1]*100, 1), "%)", sep = ""), 
+            ylab = paste("PC2 (", round(PCA_whole$prop_expl_var$X[2]*100, 1), "%)", sep = ""),
+            ggtheme = theme_classic()) +
+  
+  geom_point(data = PCA_whole_scores %>%
+               group_by((!!sym(i))) %>%
+               summarise(across(matches("PC"), mean)), 
+             aes(PC1, PC2, color = (!!sym(i))), size = 4, shape = 8) +
+  
+  scale_color_manual(
+    name = "Sebum Group",
+    values = c("Low" = "#4575b4", "High" = "#e08214"),
+    labels = c(
+      Low = paste0("Low (< 3.5 µg/cm²) (n=", low_n, ")"), #7
+      High = paste0("High (> 16.9 µg/cm²) (n=", high_n, ")") #20
+    )
+  ) +
+  
+  theme(plot.title = element_text(size = 15), 
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 11)) +
+  
+  coord_fixed()+ annotate("text", 
+    x = Inf, y = Inf,
+    label = label_text,
+    hjust = 1.1, vjust = 1.2, size = 3.8
+  )
+```
+
+
+```{r}
+# PLSDA
+PLSDA_extreme <- mixOmics::plsda(data_sample_extreme_clr, PCA_whole_scores$Extreme_Sebum, ncomp = 5, scale = TRUE)
+PLSDA_extreme_scores <- data.frame(PLSDA_extreme$variates$X) %>%
+  rownames_to_column("SampleID") %>%
+  left_join(metadata_with_runorder_clean, by = c("SampleID" = "filename_2"))
+
+
+
+# Create PLS-DA plot
+PLSDA_extreme_plot <- PLSDA_extreme_scores %>%
+  ggscatter(x = "comp1", y = "comp2", color = "Extreme_Sebum", alpha = 0.6,
+            title = "PLS-DA of RCLR-Transformed Metabolite Features by Sebum Level",
+            xlab = paste("Component 1 (", round(PLSDA_extreme$prop_expl_var$X[1] * 100, 1), "%)", sep = ""),
+            ylab = paste("Component 2 (", round(PLSDA_extreme$prop_expl_var$X[2] * 100, 1), "%)", sep = ""),
+            ggtheme = theme_classic()) +
+  
+  geom_point(
+    data = PLSDA_extreme_scores %>%
+      group_by(Extreme_Sebum) %>%
+      summarise(across(matches("comp"), mean)),
+    aes(comp1, comp2, color = Extreme_Sebum),
+    size = 4, shape = 8
+  ) +
+  
+  scale_color_manual(
+    name = "Sebum Group",
+    values = c("Low" = "#4575b4", "High" = "#e08214"),
+    labels = c(
+      Low = paste0("Low (< 3.5 µg/cm²) (n=", low_n, ")"),
+      High = paste0("High (> 16.9 µg/cm²) (n=", high_n, ")")
+    )
+  ) +
+  
+  theme(
+    plot.title = element_text(size = 15),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 11)
+  ) +
+  
+  coord_fixed() 
+```
+```{r}
+# Save ggplot object as an RDS file
+saveRDS(PLSDA_extreme_plot, file = "~/OneDrive - UGent/CMET/Shiseido_Project/Figures/Metabolomics/PLSDA_extreme_plot.rds")
+
+```
+
+
+```{r}
+Loadings_extreme <- plotLoadings(PLSDA_extreme, contrib = "max") %>%
+  as.data.frame(check.names = FALSE) %>%
+  rownames_to_column()
+```
+
+```{r}
+set.seed(123)
+# Dynamically remove 'X.' prefix if it exists
+colnames(Loadings_extreme) <- gsub("^X\\.", "", colnames(Loadings_extreme))
+
+# Now, select the columns of interest
+Loadings_extreme <- Loadings_extreme %>%
+  dplyr::select(rowname, GroupContrib, importance)
+
+perf_PLSDA_extreme <- perf(PLSDA_extreme, validation = "Mfold", folds =5, nrepeat=100, auc=TRUE) #perform 100 iunstead of 10 M-fold or loo
+plot(perf_PLSDA_extreme, legend = FALSE)
+```
+
+```{r}
+
+png("../figures/supplementary/suppl_fig11.png", res = 300, width = 5, height = 5, units = "in")
+ 
+# Generate the PLS-DA performance plot
+plot(perf_PLSDA_extreme)
+
+# Close the device to save the plot
+dev.off()
+
+```
+
+```{r}
+print(perf_PLSDA_extreme$error.rate)
+print(perf_PLSDA_extreme$auc)
+
+```
+```{r}
+colnames(perf_PLSDA_extreme)
+```
+
+
+```{r}
+#when excluding chin, ear, neck, temple ; ONLY FOREHEAD, NOSE CHEEK
+label_text <- paste0("AUC = 0.92, BER = 0.14")
+```
+
+
+```{r}
+# Create PLS-DA plot
+PLSDA_extreme_plot <- PLSDA_extreme_scores %>%
+  ggscatter(x = "comp1", y = "comp2", color = "Extreme_Sebum", alpha = 0.6,
+            title = "PLS-DA of RCLR-Transformed Metabolite Features by Sebum Level",
+            xlab = paste("Component 1 (", round(PLSDA_extreme$prop_expl_var$X[1] * 100, 1), "%)", sep = ""),
+            ylab = paste("Component 2 (", round(PLSDA_extreme$prop_expl_var$X[2] * 100, 1), "%)", sep = ""),
+            ggtheme = theme_classic()) +
+  
+  geom_point(
+    data = PLSDA_extreme_scores %>%
+      group_by(Extreme_Sebum) %>%
+      summarise(across(matches("comp"), mean)),
+    aes(comp1, comp2, color = Extreme_Sebum),
+    size = 4, shape = 8
+  ) +
+  
+  scale_color_manual(
+    name = "Sebum Group",
+    values = c("Low" = "#4575b4", "High" = "#e08214"),
+    labels = c(
+      Low = paste0("Low (< 3.5 µg/cm²) (n=", low_n, ")"),
+      High = paste0("High (> 16.9 µg/cm²) (n=", high_n, ")")
+    )
+  ) +
+  
+  theme(
+    plot.title = element_text(size = 15),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 11)
+  ) +
+  
+  coord_fixed() +
+  
+  coord_fixed()+ annotate("text", 
+    x = Inf, y = Inf,
+    label = label_text,
+    hjust = 1.1, vjust = 1.2, size = 3.8
+  )
+```
+
+```{r}
+VIPs_extreme <- as.data.frame(mixOmics::vip(PLSDA_extreme))
+VIPs_extreme_filter <- dplyr::filter(VIPs_extreme, VIPs_extreme$comp1 > 1) # larger than 1 is seen as an important component
+VIPs_extreme_filter$ID <- rownames(VIPs_extreme_filter)
+VIPs_extreme_select <- VIPs_extreme_filter %>% dplyr::select(ID, comp1)
+VIPs_extreme_Load <- VIPs_extreme_select %>% 
+  left_join(Loadings_extreme, by = c("ID" = "rowname")) %>% arrange(desc(comp1)) %>%
+  left_join(info_feature_complete, by = c("ID" = "Feature")) %>% dplyr::select(1:8)
+```
+
+
+
+```{r}
+
+write_csv(x = VIPs_extreme_Load, file = "../output/metabolomics/PLSDA/VIPs_extreme_Load_data.csv")
+
+```
+
+```{r}
+VIPs_extreme_Load <- read_csv("../output/metabolomics/PLSDA/VIPs_extreme_Load_data_SZ_MC_PD_05072025.csv")
+```
+
+```{r}
+VIPs_extreme_Load2 <- VIPs_extreme_Load %>%
+  mutate(
+    cytoscape_annotation = if_else(
+      is.na(Compound_Name) | Compound_Name == "",
+      paste0("(m/z: ", round(mz, 2), ", RT: ", round(RT, 2), ")"),
+      paste0(Compound_Name_2, " (m/z: ", round(mz, 2), ", RT: ", round(RT, 2), ")")
+    )
+  )
+```
+
+
+```{r}
+#adapted it for Compound_Name2
+VIPs_anno <- VIPs_extreme_Load %>%
+  filter(!is.na(Compound_Name_2))
+
+# Set compound names as rownames
+rownames(VIPs_anno) <- VIPs_anno$Compound_Name_2
+
+
+```
+
+```{r}
+
+#selected_ids <- c(2059,2287, 2069, 1921, 45, 2441, 2509, 2245)
+selected_ids <- c(2314,1744, 2069, 1883, 2409, 2509, 2287, 2160)
+selected_ids <- c(2314,1744, 2069, 1883, 2409, 2509, 2287, 2160,1536,1011) #to remove diethylphtalate and maybe also diphenhydramine
+VIPs_selected <- VIPs_anno %>% filter(ID %in% selected_ids)
+VIPs_remaining <- VIPs_anno %>% filter(!(ID %in% selected_ids))
+
+```
+```{r}
+# Recreate sebum_group thresholds (same as earlier in your code)
+q          <- quantile(metadata_with_runorder_clean$sebum, probs = c(0.25, 0.75), na.rm = TRUE)
+low_thresh  <- q[1]
+high_thresh <- q[2]
+
+# Build clr_long with sebum_group created inline
+clr_long <- data_sample_clr %>%
+  as.data.frame() %>%
+  rownames_to_column("SampleID") %>%
+  left_join(
+    metadata_with_runorder_clean %>%
+      dplyr::select(filename_2, sebum) %>%
+      mutate(
+        sebum_group = case_when(
+          sebum <  low_thresh  ~ "low",
+          sebum <= high_thresh ~ "medium",
+          sebum >  high_thresh ~ "high"
+        )
+      ),
+    by = c("SampleID" = "filename_2")
+  ) %>%
+  rename(group = sebum_group) %>%
+  filter(!is.na(group))
+
+# Counts per group
+sebum_counts <- clr_long %>% count(group)
+low_n    <- sebum_counts %>% filter(group == "low")    %>% pull(n)
+medium_n <- sebum_counts %>% filter(group == "medium") %>% pull(n)
+high_n   <- sebum_counts %>% filter(group == "high")   %>% pull(n)
+
+colors <- c("low" = "#4575b4", "medium" = "#fee0b6", "high" = "#e08214")
+```
+
+
+
+```{r}
+make_vip_boxplots <- function(vip_df, clr_data, output_prefix) {
+  plots <- list()
+
+  for (i in seq_len(nrow(vip_df))) {
+    metabolite     <- as.character(vip_df$ID[i])
+    metabolite_name <- vip_df$Compound_Name_2[i]
+    mz_value       <- round(vip_df$mz[i], 2)
+    rt_value       <- round(vip_df$RT[i], 2)
+
+    clr_data$group <- factor(clr_data$group, levels = c("low", "medium", "high"))
+
+    temp_data <- clr_data %>%
+      dplyr::select(group, !!sym(metabolite)) %>%
+      filter(!is.na(.data[[metabolite]]))
+
+    kw_res  <- kruskal.test(temp_data[[metabolite]] ~ temp_data$group)
+    p_val   <- kw_res$p.value
+    stars   <- if (p_val < 0.001) "***" else if (p_val < 0.01) "**" else if (p_val < 0.05) "*" else "ns"
+    label_text <- paste0("Kruskal-Wallis p = ", signif(p_val, 3), " ", stars)
+    y_max   <- max(temp_data[[metabolite]], na.rm = TRUE)
+
+    p <- clr_data %>%
+      ggplot(aes(x = group, y = .data[[metabolite]], fill = group, color = group)) +
+      geom_boxplot(outlier.shape = NA, color = "black", width = 0.5) +
+      geom_jitter(width = 0.2, alpha = 0.6, size = 0.5) +
+      scale_fill_manual(values  = colors) +
+      scale_color_manual(values = colors) +
+      scale_x_discrete(labels = c(
+        "low"    = paste0("Low Sebum\n(< 3.5 µg/cm²)\n(n = ",       low_n,    ")"),
+        "medium" = paste0("Medium Sebum\n(3.5–16.9 µg/cm²)\n(n = ", medium_n, ")"),
+        "high"   = paste0("High Sebum\n(> 16.9 µg/cm²)\n(n = ",     high_n,   ")")
+      )) +
+      labs(
+        y     = paste0("rclr ", metabolite_name, "\n(m/z: ", mz_value, ", RT: ", rt_value, ")"),
+        x     = NULL,
+        title = metabolite_name
+      ) +
+      theme_minimal() +
+      theme(
+        axis.text.x  = element_text(size = 12),
+        axis.text.y  = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        plot.title   = element_text(size = 15),
+        axis.ticks   = element_line(),
+        panel.grid   = element_blank(),
+        legend.position = "none",
+        axis.line    = element_line(color = "black")
+      ) +
+      annotate("text", x = 2, y = y_max * 1.1, label = label_text, size = 4)
+
+    plots[[length(plots) + 1]] <- p
+  }
+  return(plots)
+}
+```
+
+
+```{r}
+vip_plots <-make_vip_boxplots(VIPs_selected, clr_long, "selected_VIPs")
+vip_remaining_plots <-make_vip_boxplots(VIPs_remaining, clr_long, "remaining_VIPs")
+
+```
+
+```{r}
+# Select and arrange your desired plots
+final_figure <- ggarrange(
+  vip_plots[[1]], vip_plots[[4]], vip_plots[[3]],vip_plots[[8]], 
+  NULL, NULL, NULL, NULL,
+  vip_plots[[2]], vip_plots[[5]], vip_plots[[6]], vip_plots[[7]],
+  NULL, NULL, NULL, NULL,
+  ncol = 4, nrow = 4,
+  labels = c("d", "e", "f", "g", "", "", "", "", "h", "i","j", "k", "", "", "","" ),
+  heights = c(1, 0.75, 1, 0.75),
+  font.label = list(size = 16, face = "bold")
+)
+
+# Show it in the viewer
+print(final_figure)
+```
