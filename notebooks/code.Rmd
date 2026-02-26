@@ -1565,6 +1565,200 @@ print(heatmap_final)
 print(heatmap_transposed)
 ```
 
+#Supplementary Fig.3
+
+```{r}
+library(readr)
+library(stringr)
+
+
+df_rel_abundance <- readr::read_tsv("/Users/brittadepessemier/Skin_microbiome_projects_analysis/Shiseido/data/16S_V4_relative_abundance_RefHit.tsv")
+colnames(df_rel_abundance)[1] <- "SampleID"
+
+
+```
+
+```{r}
+row_sums <- df_rel_abundance %>%
+  select(-SampleID) %>%
+  rowSums()
+
+# Check if all rows sum to 1 (or very close, allowing for floating point precision)
+all_close_to_one <- all(abs(row_sums - 1) < 1e-6)
+
+# Optionally: show rows that don't sum to 1 (for inspection)
+non_conforming <- df_rel_abundance$SampleID[abs(row_sums - 1) >= 1e-6]
+
+# Output results
+print(all_close_to_one)
+if (!all_close_to_one) {
+  cat("Samples not summing to 1:\n")
+  print(non_conforming)
+}
+```
+
+
+```{r}
+df_rel_abundance$SampleID <- str_remove(df_rel_abundance$SampleID, "^130729\\.")
+
+# Step 3: Read metadata and join Face_site
+df_merged <- df_rel_abundance %>%
+  left_join(Shiseido_metadata %>% select(`SampleID_2`, Face_site), by = c("SampleID" = "SampleID_2"))
+
+```
+
+```{r}
+df_avg <- Shiseido_metadata %>%
+  filter(Face_site %in% c("Forehead", "Nose", "Cheek")) %>%
+  mutate(
+    a = as.numeric(a),
+    Subject_ID = as.factor(Subject_ID),
+    Face_site = as.factor(Face_site)
+  ) %>%
+  filter(!is.na(a)) %>%
+  group_by(Subject_ID, Face_site) %>%
+  summarise(a = mean(a, na.rm = TRUE), .groups = "drop")
+
+```
+
+```{r}
+sample_counts <- df_merged %>%
+  filter(!is.na(Face_site)) %>%
+  group_by(Face_site) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(Face_site_label = paste0(Face_site, "\n(n=", n, ")"))
+
+# Create named vector to relabel x-axis
+x_labels <- setNames(sample_counts$Face_site_label, sample_counts$Face_site)
+```
+
+```{r}
+# Get Face_site order from sample_counts
+face_site_order <- sample_counts$Face_site
+
+# Apply factor levels consistently to both datasets
+df_avg$Face_site <- factor(df_avg$Face_site, levels = face_site_order)
+#pseudo_long$Face_site <- factor(pseudo_long$Face_site, levels = face_site_order)
+
+```
+
+```{r}
+# Get the current taxonomy column names (excluding SampleID and Face_site)
+tax_cols <- setdiff(colnames(df_merged), c("SampleID", "Face_site"))
+
+# Function to extract the correct taxonomic label
+extract_lowest_defined_level <- function(tax_string) {
+  parts <- str_split(tax_string, ";\\s*")[[1]]
+  parts <- parts[parts != ""]  # remove empty parts
+  if (length(parts) == 0) return("Unclassified")
+  
+  last <- parts[length(parts)]
+  
+  if (str_detect(last, "g__uncultured") && length(parts) > 1) {
+    return(parts[length(parts) - 1])  # return level above (e.g. family)
+  } else {
+    return(last)
+  }
+}
+
+# Apply the function to all taxonomic column names
+cleaned_names <- map_chr(tax_cols, extract_lowest_defined_level)
+
+# Assign the cleaned names back to the dataframe
+colnames(df_merged)[match(tax_cols, colnames(df_merged))] <- cleaned_names
+```
+
+
+
+```{r}
+# Step 4: Reshape to long format
+df_long <- df_merged %>%
+  pivot_longer(cols = -c(SampleID, Face_site), names_to = "Taxon", values_to = "Abundance")
+
+```
+
+```{r}
+
+# Step 6: Compute top 15 genera across all samples
+top15_taxa <- df_long %>%
+  group_by(Taxon) %>%
+  summarise(Total = sum(Abundance, na.rm = TRUE)) %>%
+  arrange(desc(Total)) %>%
+  slice_head(n = 15) %>%
+  pull(Taxon)
+
+# Step 7: Collapse others
+df_long <- df_long %>%
+  mutate(Taxon = ifelse(Taxon %in% top15_taxa, Taxon, "Others"))
+
+# Step 7: Collapse others at the sample level (before summarizing)
+df_long_collapsed <- df_long %>%
+  mutate(Taxon = ifelse(Taxon %in% top15_taxa, Taxon, "Others"))
+
+# Step 8: Then compute the mean abundance per Face_site
+df_avg <- df_long_collapsed %>%
+  group_by(SampleID, Face_site, Taxon) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+  group_by(Face_site, Taxon) %>%
+  summarise(Mean_abundance = mean(Abundance), .groups = "drop")
+
+
+```
+```{r}
+library(ggplot2)
+library(forcats)
+library(scales)
+
+# Define color palette based on your Python output
+custom_colors <- c(
+  "g__Staphylococcus" = "#2166ac",
+  "f__Neisseriaceae" = "#b2abd2",
+  "g__Lawsonella" = "#f46d43",
+  "g__Corynebacterium" = "#66bd63",
+  "g__Streptococcus" = "#a6dba0",
+  "g__Enhydrobacter" = "#d53e4f",
+  "g__Acinetobacter" = "#af8dc3",
+  "g__Xanthomonas" = "#b2182b",
+  "g__Haemophilus" = "#d6604d",
+  "g__Paracoccus" = "#f4a582",
+  "g__Pseudomonas" = "#92c5de",
+  "g__Prevotella" = "#878787",
+  "g__Neisseria" = "#fee08b",
+  "g__Veillonella" = "#fdae61",
+  "g__Sphingomonas" = "#abd9e9",
+  "Others" = "#d0d0d0"  # light grey
+)
+
+# Plot with customizations
+stacked<-ggplot(df_avg, aes(x = Face_site, y = Mean_abundance, fill = Taxon)) +
+  geom_bar(stat = "identity", position = "fill", color = "black", width = 0.8) +
+  ylab("Mean Relative Abundance (%)") +
+  xlab("Face Site") +
+  ggtitle("Top 15 Genera by Face Site – 16S rRNA (V4 Region)")+
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_x_discrete(labels = x_labels) +
+  scale_fill_manual(values = custom_colors, name = "Taxonomy") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5, size = 11),
+    axis.text.y = element_text(size = 11),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    legend.position = "right",
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10)
+  )
+
+```
+
+
+```{r}
+ggsave("../figures/supplementary/suppl_fig3.png",
+       stacked,
+       width = 9, height = 5, dpi = 300)
+```
+
 
 
 #### METABOLOMICS 
