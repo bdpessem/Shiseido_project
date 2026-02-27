@@ -1572,7 +1572,7 @@ library(readr)
 library(stringr)
 
 
-df_rel_abundance <- readr::read_tsv("/Users/brittadepessemier/Skin_microbiome_projects_analysis/Shiseido/data/16S_V4_relative_abundance_RefHit.tsv")
+df_rel_abundance <- readr::read_tsv("../data/amplicon/16S_V4_relative_abundance_RefHit.tsv")
 colnames(df_rel_abundance)[1] <- "SampleID"
 
 
@@ -3603,128 +3603,944 @@ rownames(VIPs_anno) <- VIPs_anno$Compound_Name_2
 
 ```
 
+
+
 ```{r}
+library(dplyr)
+library(tidyr)
+library(vegan)
+library(ggplot2)
+library(ggpubr)
 
-#selected_ids <- c(2059,2287, 2069, 1921, 45, 2441, 2509, 2245)
-selected_ids <- c(2314,1744, 2069, 1883, 2409, 2509, 2287, 2160)
-selected_ids <- c(2314,1744, 2069, 1883, 2409, 2509, 2287, 2160,1536,1011) #to remove diethylphtalate and maybe also diphenhydramine
-VIPs_selected <- VIPs_anno %>% filter(ID %in% selected_ids)
-VIPs_remaining <- VIPs_anno %>% filter(!(ID %in% selected_ids))
+metadata_with_runorder_clean <- metadata_with_runorder_clean %>%
+  dplyr::mutate(
+    sebum_group = dplyr::case_when(
+      sebum < 3.5                    ~ "low",
+      sebum > 16.9                   ~ "high",
+      sebum >= 3.5 & sebum <= 16.9  ~ "medium",
+      TRUE                           ~ NA_character_
+    )
+  )
 
-```
-```{r}
-# Recreate sebum_group thresholds (same as earlier in your code)
-q          <- quantile(metadata_with_runorder_clean$sebum, probs = c(0.25, 0.75), na.rm = TRUE)
-low_thresh  <- q[1]
-high_thresh <- q[2]
+metadata_with_runorder_clean
 
-# Build clr_long with sebum_group created inline
-clr_long <- data_sample_clr %>%
-  as.data.frame() %>%
-  rownames_to_column("SampleID") %>%
-  left_join(
-    metadata_with_runorder_clean %>%
-      dplyr::select(filename_2, sebum) %>%
-      mutate(
-        sebum_group = case_when(
-          sebum <  low_thresh  ~ "low",
-          sebum <= high_thresh ~ "medium",
-          sebum >  high_thresh ~ "high"
-        )
-      ),
-    by = c("SampleID" = "filename_2")
+#Step 1: Prepare canopus table with "Unclassified" fallback
+canopus_mapping <- canopus %>%
+  mutate(
+    featureId = as.character(`featureId`),
+    specific_class = ifelse(
+      is.na(`ClassyFire#most specific class`) | `ClassyFire#most specific class` == "",
+      "Unclassified",
+      as.character(`ClassyFire#most specific class`)
+    )
   ) %>%
+  select(featureId, specific_class)
+
+#Step 2: Pivot data_sample and merge with class labels
+#data_sample_long <- data_sample %>%
+#  pivot_longer(-SampleID, names_to = "featureId", values_to = "intensity") %>%
+#  mutate(featureId = as.character(featureId))
+
+data_sample_long <- data_sample_filtered %>%
+  pivot_longer(-SampleID, names_to = "featureId", values_to = "intensity") %>%
+  mutate(featureId = as.character(featureId))
+
+# Ensure all features are retained, including those not in canopus
+data_sample_class_long <- data_sample_long %>%
+  left_join(canopus_mapping, by = "featureId") %>%
+  mutate(specific_class = ifelse(is.na(specific_class), "Unclassified", specific_class))
+
+# Step 3: Sum intensities per class per sample
+data_sample_class_sum <- data_sample_class_long %>%
+  group_by(SampleID, specific_class) %>%
+  summarise(class_intensity = sum(intensity, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = specific_class, values_from = class_intensity, values_fill = 0)
+
+# Step 4: rclr transformation
+data_sample_class_sum_clr <- data_sample_class_sum %>%
+  column_to_rownames("SampleID") %>%
+  decostand(method = "rclr") %>%
+  as.data.frame() %>%
+  rownames_to_column("SampleID")
+
+# Step 5: Merge with metadata 
+clr_long_subject <- data_sample_class_sum_clr %>%
+  left_join(metadata_with_runorder_clean %>%
+              select(filename_2, Subject_ID, sebum_group), #merge with sebum_group! not sebum_group_median which is per subject_ID
+            by = c("SampleID" = "filename_2")) %>%
   rename(group = sebum_group) %>%
-  filter(!is.na(group))
+  mutate(group = factor(group, levels = c("low", "medium", "high")))
 
-# Counts per group
-sebum_counts <- clr_long %>% count(group)
-low_n    <- sebum_counts %>% filter(group == "low")    %>% pull(n)
-medium_n <- sebum_counts %>% filter(group == "medium") %>% pull(n)
-high_n   <- sebum_counts %>% filter(group == "high")   %>% pull(n)
-
+# Step 6: Plotting function ----
 colors <- c("low" = "#4575b4", "medium" = "#fee0b6", "high" = "#e08214")
-```
 
+make_rclr_boxplots_by_class <- function(clr_data) {
+  plot_list <- list()
+  
+  class_columns <- setdiff(names(clr_data), c("SampleID", "Subject_ID", "group"))
+  group_counts <- clr_data %>% count(group)
+  group_sizes <- setNames(group_counts$n, group_counts$group)
 
+  for (class_name in class_columns) {
+    df <- clr_data %>%
+      select(SampleID, group, !!sym(class_name)) %>%
+      filter(!is.na(group) & !is.na(.data[[class_name]]))
 
-```{r}
-make_vip_boxplots <- function(vip_df, clr_data, output_prefix) {
-  plots <- list()
+    if (nrow(df) == 0 || length(unique(df$group)) < 2) next
 
-  for (i in seq_len(nrow(vip_df))) {
-    metabolite     <- as.character(vip_df$ID[i])
-    metabolite_name <- vip_df$Compound_Name_2[i]
-    mz_value       <- round(vip_df$mz[i], 2)
-    rt_value       <- round(vip_df$RT[i], 2)
+    y_max <- max(df[[class_name]], na.rm = TRUE)
 
-    clr_data$group <- factor(clr_data$group, levels = c("low", "medium", "high"))
-
-    temp_data <- clr_data %>%
-      dplyr::select(group, !!sym(metabolite)) %>%
-      filter(!is.na(.data[[metabolite]]))
-
-    kw_res  <- kruskal.test(temp_data[[metabolite]] ~ temp_data$group)
-    p_val   <- kw_res$p.value
-    stars   <- if (p_val < 0.001) "***" else if (p_val < 0.01) "**" else if (p_val < 0.05) "*" else "ns"
-    label_text <- paste0("Kruskal-Wallis p = ", signif(p_val, 3), " ", stars)
-    y_max   <- max(temp_data[[metabolite]], na.rm = TRUE)
-
-    p <- clr_data %>%
-      ggplot(aes(x = group, y = .data[[metabolite]], fill = group, color = group)) +
+    p <- ggplot(df, aes(x = group, y = .data[[class_name]], fill = group, color = group)) +
       geom_boxplot(outlier.shape = NA, color = "black", width = 0.5) +
       geom_jitter(width = 0.2, alpha = 0.6, size = 0.5) +
-      scale_fill_manual(values  = colors) +
+      scale_fill_manual(values = colors) +
       scale_color_manual(values = colors) +
       scale_x_discrete(labels = c(
-        "low"    = paste0("Low Sebum\n(< 3.5 µg/cm²)\n(n = ",       low_n,    ")"),
-        "medium" = paste0("Medium Sebum\n(3.5–16.9 µg/cm²)\n(n = ", medium_n, ")"),
-        "high"   = paste0("High Sebum\n(> 16.9 µg/cm²)\n(n = ",     high_n,   ")")
+        "low" = paste0("Low Sebum\n(< 3.5 µg/cm²)\n(n = ", group_sizes["low"], ")"),
+        "medium" = paste0("Medium Sebum\n(3.5–16.9 µg/cm²)\n(n = ", group_sizes["medium"], ")"),
+        "high" = paste0("High Sebum\n(> 16.9 µg/cm²)\n(n = ", group_sizes["high"], ")")
       )) +
+      stat_compare_means(
+        method = "wilcox.test",
+        comparisons = list(
+          c("low", "medium"),
+          c("low", "high"),
+          c("medium", "high")
+        ),
+        p.adjust.method = "BH",
+        size = 4
+      ) +
       labs(
-        y     = paste0("rclr ", metabolite_name, "\n(m/z: ", mz_value, ", RT: ", rt_value, ")"),
-        x     = NULL,
-        title = metabolite_name
+        y = paste0("rclr ", class_name),
+        x = NULL,
+        title = class_name
       ) +
       theme_minimal() +
       theme(
-        axis.text.x  = element_text(size = 12),
-        axis.text.y  = element_text(size = 12),
-        axis.title.y = element_text(size = 12),
-        plot.title   = element_text(size = 15),
-        axis.ticks   = element_line(),
-        panel.grid   = element_blank(),
-        legend.position = "none",
-        axis.line    = element_line(color = "black")
+        axis.text = element_text(size = 10),
+        axis.title.y = element_text(size = 11),
+        plot.title = element_text(size = 13, hjust = 0.5),
+        axis.line = element_line(color = "black"),
+        panel.grid = element_blank(),
+        legend.position = "none"
       ) +
-      annotate("text", x = 2, y = y_max * 1.1, label = label_text, size = 4)
+      expand_limits(y = y_max * 1.1) +
+      coord_cartesian(clip = "off")
 
-    plots[[length(plots) + 1]] <- p
+    plot_list[[class_name]] <- p
   }
-  return(plots)
+
+  return(plot_list)
 }
-```
 
+# ---- Step 7: Generate plots ----
+rclr_class_plots <- make_rclr_boxplots_by_class(clr_long_subject)
+
+# Example to display one plot (e.g., Unclassified)
+print(rclr_class_plots[["Unclassified"]])
+
+# Example to display one plot
+print(rclr_class_plots[["N-acyl-alpha amino acids"]])
+
+print(rclr_class_plots[["N-acyl-alpha amino acids and derivatives"]])
+
+print(rclr_class_plots[["N-acyl amines"]])
+
+print(rclr_class_plots[["1-monoacylglycerols"]])
+
+print(rclr_class_plots[["Monoacylglycerols"]])
+
+print(rclr_class_plots[["Fatty acid esters"]])
+
+```
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(ggsignif)
+
+# Selected classes
+selected_classes <- c(
+  "N-acyl-alpha amino acids", "N-acylethanolamines", "1-monoacylglycerols",
+  "Fatty acid esters", "Long-chain fatty acids", "Fatty alcohols",
+  "Alpha amino acids and derivatives", "Oligopeptides"
+)
+
+# Colors
+colors <- c("low" = "#4575b4", "medium" = "#fee0b6", "high" = "#e08214")
+
+# Prepare long-format data
+clr_long_plot_df <- clr_long_subject %>%
+  select(SampleID, group, all_of(selected_classes)) %>%
+  pivot_longer(cols = all_of(selected_classes), names_to = "Class", values_to = "rclr_intensity") %>%
+  filter(!is.na(group), !is.na(rclr_intensity)) %>%
+  mutate(
+    group = factor(group, levels = c("low", "medium", "high")),
+    Class = factor(Class, levels = selected_classes),
+    class_index = as.numeric(Class),
+    group_index = as.numeric(group),
+    x = (class_index - 1) * 4 + group_index
+  )
+
+# Class label positions
+x_labels_df <- clr_long_plot_df %>%
+  group_by(Class) %>%
+  summarise(x_center = mean(x)) %>%
+  mutate(label = as.character(Class))
+
+# Sample sizes for legend
+group_counts <- clr_long_plot_df %>%
+  distinct(SampleID, group) %>%
+  count(group) %>%
+  deframe()
+
+group_labels <- paste0(
+  c("Low Sebum (< 3.5 µg/cm²)", "Medium Sebum (3.5–16.9 µg/cm²)", "High Sebum (> 16.9 µg/cm²)"),
+  "\n(n = ", group_counts[c("low", "medium", "high")], ")"
+)
+names(group_labels) <- c("low", "medium", "high")
+
+# Define comparisons
+comparisons <- list(c("low", "medium"), c("low", "high"), c("medium", "high"))
+comparison_labels <- c("low vs medium", "low vs high", "medium vs high")
+
+# Compute p-values
+pval_df <- purrr::map_dfr(selected_classes, function(class_name) {
+  class_data <- clr_long_plot_df %>% filter(Class == class_name)
+  purrr::map2_dfr(comparisons, comparison_labels, function(comp, label) {
+    g1 <- comp[1]; g2 <- comp[2]
+    vals1 <- class_data %>% filter(group == g1) %>% pull(rclr_intensity)
+    vals2 <- class_data %>% filter(group == g2) %>% pull(rclr_intensity)
+    raw_p <- wilcox.test(vals1, vals2)$p.value
+    data.frame(Class = class_name, Group1 = g1, Group2 = g2, Comparison = label, Raw_p = raw_p)
+  })
+}) %>%
+  mutate(
+    Adj_p = p.adjust(Raw_p, method = "BH"),
+    Significance = case_when(
+      Adj_p <= 0.001 ~ "***",
+      Adj_p <= 0.01 ~ "**",
+      Adj_p <= 0.05 ~ "*",
+      TRUE ~ "ns"
+    ),
+    Label = paste0(Significance, " p = ", signif(Adj_p, 2), "\n"),
+    class_index = match(Class, selected_classes),
+    xmin = (class_index - 1) * 4 + as.numeric(factor(Group1, levels = c("low", "medium", "high"))),
+    xmax = (class_index - 1) * 4 + as.numeric(factor(Group2, levels = c("low", "medium", "high"))),
+    base_y = mapply(function(class, g1, g2) {
+      max(clr_long_plot_df %>%
+            filter(Class == class, group %in% c(g1, g2)) %>%
+            pull(rclr_intensity), na.rm = TRUE)
+    }, Class, Group1, Group2)
+  ) %>%
+  group_by(Class) %>%
+  arrange(base_y, .by_group = TRUE) %>%
+  mutate(
+    rank = row_number(),
+    y_position = base_y + (rank - 1) * 1.2
+  ) %>%
+  ungroup()
+
+# Plot
+Figure5a <- ggplot(clr_long_plot_df, aes(x = x, y = rclr_intensity, fill = group)) +
+  geom_boxplot(aes(group = x), outlier.shape = NA, width = 0.6, color = "black") +
+  geom_jitter(aes(color = group), width = 0.2, size = 0.5, alpha = 0.6) +
+  geom_text(data = x_labels_df,
+            aes(x = x_center, y = min(clr_long_plot_df$rclr_intensity) - 0.6, label = label),
+            inherit.aes = FALSE, size = 5, hjust = 0.5) +
+  geom_segment(
+    data = pval_df,
+    aes(x = xmin, xend = xmax, y = y_position, yend = y_position),
+    inherit.aes = FALSE
+  ) +
+  geom_text(
+    data = pval_df,
+    aes(x = (xmin + xmax) / 2, y = y_position + 0.2, label = Label),
+    size = 4,
+    inherit.aes = FALSE
+  ) +
+  ylim(min(clr_long_plot_df$rclr_intensity) - 0.6,
+       max(pval_df$y_position, na.rm = TRUE) + 1) +
+  scale_fill_manual(values = colors, name = "Sebum Group", labels = group_labels) +
+  scale_color_manual(values = colors, guide = "none") +
+  labs(
+    title = "Compositional abundance of lipid classes across sebum groups",
+    y = "rclr-transformed intensity", x = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.title = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    plot.title = element_text(size = 15, hjust = 0.5),
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    axis.line = element_line(color = "black")
+  )
+
+# Optional: Save
+# write.csv(pval_df, "LipidClass_Wilcoxon_pvals.csv", row.names = FALSE)
+
+```
+#Figure 5a with LMM
 
 ```{r}
-vip_plots <-make_vip_boxplots(VIPs_selected, clr_long, "selected_VIPs")
-vip_remaining_plots <-make_vip_boxplots(VIPs_remaining, clr_long, "remaining_VIPs")
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(lme4)
+library(emmeans)
+
+# Define colors and selected classes
+selected_classes <- c(
+  "N-acyl-alpha amino acids", "N-acylethanolamines", "1-monoacylglycerols",
+  "Fatty acid esters", "Long-chain fatty acids", "Fatty alcohols",
+  "Alpha amino acids and derivatives", "Oligopeptides"
+)
+colors <- c("low" = "#4575b4", "medium" = "#fee0b6", "high" = "#e08214")
+
+# Prepare long-format data
+clr_long_plot_df <- clr_long_subject %>%
+  select(SampleID, Subject_ID, group, all_of(selected_classes)) %>%
+  pivot_longer(cols = all_of(selected_classes), names_to = "Class", values_to = "rclr_intensity") %>%
+  filter(!is.na(group), !is.na(rclr_intensity)) %>%
+  mutate(
+    group = factor(group, levels = c("low", "medium", "high")),
+    Class = factor(Class, levels = selected_classes),
+    class_index = as.numeric(Class),
+    group_index = as.numeric(group),
+    x = (class_index - 1) * 4 + group_index
+  )
+
+# Compute p-values using LMMs
+lmm_pval_df <- purrr::map_dfr(selected_classes, function(class_name) {
+  class_data <- clr_long_plot_df %>% filter(Class == class_name)
+  model <- lmer(rclr_intensity ~ group + (1 | Subject_ID), data = class_data)
+  emmeans_result <- emmeans(model, pairwise ~ group)
+  pairs <- as.data.frame(emmeans_result$contrasts)
+  pairs %>%
+    mutate(
+      Class = class_name,
+      Group1 = gsub(" - .*", "", contrast),
+      Group2 = gsub(".*- ", "", contrast),
+      Comparison = contrast,
+      Raw_p = p.value
+    ) %>%
+    select(Class, Group1, Group2, Comparison, Raw_p)
+}) %>%
+  mutate(
+    Adj_p = p.adjust(Raw_p, method = "BH"),
+    Significance = case_when(
+      Adj_p <= 0.001 ~ "***",
+      Adj_p <= 0.01 ~ "**",
+      Adj_p <= 0.05 ~ "*",
+      TRUE ~ "ns"
+    ),
+    Label = paste0(Significance, " p = ", signif(Adj_p, 2), "\n"),
+    class_index = match(Class, selected_classes),
+    xmin = (class_index - 1) * 4 + as.numeric(factor(Group1, levels = c("low", "medium", "high"))),
+    xmax = (class_index - 1) * 4 + as.numeric(factor(Group2, levels = c("low", "medium", "high"))),
+    base_y = mapply(function(class, g1, g2) {
+      max(clr_long_plot_df %>%
+            filter(Class == class, group %in% c(g1, g2)) %>%
+            pull(rclr_intensity), na.rm = TRUE)
+    }, Class, Group1, Group2)
+  ) %>%
+  group_by(Class) %>%
+  arrange(base_y, .by_group = TRUE) %>%
+  mutate(y_position = base_y + (row_number() - 1) * 1.2) %>%
+  ungroup()
+
+
+Figure5a_lmm <- ggplot(clr_long_plot_df, aes(x = x, y = rclr_intensity, fill = group)) +
+  geom_boxplot(aes(group = x), outlier.shape = NA, width = 0.6, color = "black") +
+  geom_jitter(aes(color = group), width = 0.2, size = 0.5, alpha = 0.6) +
+  geom_text(data = x_labels_df,
+            aes(x = x_center, y = min(clr_long_plot_df$rclr_intensity) - 0.6, label = label),
+            inherit.aes = FALSE, size = 5, hjust = 0.5) +
+  geom_segment(
+    data = lmm_pval_df,
+    aes(x = xmin, xend = xmax, y = y_position, yend = y_position),
+    inherit.aes = FALSE
+  ) +
+  geom_text(
+    data = lmm_pval_df,
+    aes(x = (xmin + xmax) / 2, y = y_position + 0.2, label = Label),
+    size = 4,
+    inherit.aes = FALSE
+  ) +
+  ylim(min(clr_long_plot_df$rclr_intensity) - 0.6,
+       max(lmm_pval_df$y_position, na.rm = TRUE) + 1) +
+  scale_fill_manual(values = colors, name = "Sebum Group", labels = group_labels) +
+  scale_color_manual(values = colors, guide = "none") +
+  labs(
+    title = "Compositional abundance of lipid classes across sebum groups",
+    y = "rclr-transformed intensity", x = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.title = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    plot.title = element_text(size = 15, hjust = 0.5),
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    axis.line = element_line(color = "black")
+  )
+
+# You can now reuse your plotting code with `lmm_pval_df` replacing `pval_df`
+
+# Save p-values if needed
+# write.csv(lmm_pval_df, "LipidClass_LMM_pvals.csv", row.names = FALSE)
 
 ```
 
 ```{r}
-# Select and arrange your desired plots
-final_figure <- ggarrange(
-  vip_plots[[1]], vip_plots[[4]], vip_plots[[3]],vip_plots[[8]], 
-  NULL, NULL, NULL, NULL,
-  vip_plots[[2]], vip_plots[[5]], vip_plots[[6]], vip_plots[[7]],
-  NULL, NULL, NULL, NULL,
-  ncol = 4, nrow = 4,
-  labels = c("d", "e", "f", "g", "", "", "", "", "h", "i","j", "k", "", "", "","" ),
-  heights = c(1, 0.75, 1, 0.75),
+# Normalize comparison strings in both dataframes
+pval_df_clean <- pval_df %>%
+  mutate(Comparison = gsub(" vs ", " - ", Comparison))
+
+lmm_pval_df_clean <- lmm_pval_df %>%
+  mutate(Comparison = gsub(" vs ", " - ", Comparison))
+
+# Create comparison table
+supp_comparison_df <- pval_df_clean %>%
+  select(Class, Comparison, Wilcoxon_p = Raw_p, Wilcoxon_adj_p = Adj_p, Wilcoxon_sig = Significance) %>%
+  left_join(
+    lmm_pval_df_clean %>%
+      select(Class, Comparison, LMM_p = Raw_p, LMM_adj_p = Adj_p, LMM_sig = Significance),
+    by = c("Class", "Comparison")
+  ) %>%
+  mutate(
+    across(ends_with("_p"), ~ signif(., 3)),
+    across(ends_with("sig"), ~ ifelse(. == "ns", "ns", .))
+  )
+
+# View or export
+print(supp_comparison_df)
+
+write.csv(supp_comparison_df, "../output/Supplementary_Wilcoxon_vs_LMM_pvals_classes.csv", row.names = FALSE)
+
+```
+```{r}
+#selected_ids <- c(2059,2287, 2069, 1921, 45, 2441, 2509, 2245)
+selected_ids <- c(2314,1744, 2069, 1883, 2409, 2509, 2287, 2160)
+#selected_ids <- c(2314,1744, 2069, 1883, 2409, 2509, 2287, 2160,1536,1011) #to remove diethylphtalate and maybe also diphenhydramine
+VIPs_selected <- VIPs_anno %>% filter(ID %in% selected_ids)
+VIPs_remaining <- VIPs_anno %>% filter(!(ID %in% selected_ids))
+```
+
+```{r}
+clr_long_subject <- data_sample_clr %>% #data_sample_extreme_clr 
+  as.data.frame() %>%
+  rownames_to_column("SampleID") %>%
+  left_join(metadata_with_runorder_clean %>% 
+              dplyr::select(filename_2, Subject_ID, sebum_group), #merge with sebum_group; not sebum_group_median
+            by = c("SampleID" = "filename_2")) %>%
+  rename(Subject_ID = Subject_ID, group = sebum_group)
+
+```
+
+```{r}
+make_grouped_vip_boxplots_return_lmm <- function(vip_df, clr_data, canopus_df) {
+  library(lme4)
+  library(lmerTest)
+  library(emmeans)
+  
+  clr_data$group <- factor(clr_data$group, levels = c("low", "medium", "high"))
+  vip_df <- vip_df %>% mutate(ID = as.character(ID))
+  canopus_df <- canopus_df %>% mutate(featureId = as.character(featureId))
+  
+  vip_df <- vip_df %>%
+    left_join(canopus_df, by = c("ID" = "featureId"))
+  
+  plot_list <- list()
+  results_df <- list()
+
+  for (i in seq_len(nrow(vip_df))) {
+    metabolite <- as.character(vip_df$ID[i])
+    message("Processing metabolite: ", metabolite)
+
+    if (!metabolite %in% colnames(clr_data)) {
+      message("  → Skipped: Not found in clr_data")
+      next
+    }
+
+    metabolite_name <- vip_df$Compound_Name_2[i]
+    mz_value <- round(vip_df$mz[i], 2)
+    rt_value <- round(vip_df$RT[i], 2)
+    superclass <- vip_df$`ClassyFire#superclass`[i]
+
+    temp_data <- clr_data %>%
+      dplyr::select(group, Subject_ID, !!sym(metabolite)) %>%
+      filter(!is.na(.data[[metabolite]])) %>%
+      mutate(Subject_ID = as.factor(Subject_ID))
+
+    if (nrow(temp_data) == 0) {
+      message("  → Skipped: No non-NA data for this metabolite")
+      next
+    }
+
+    if (length(unique(temp_data$group)) < 2) {
+      message("  → Skipped: Fewer than 2 groups present in data")
+      next
+    }
+
+    formula_lmm <- as.formula(paste0("`", metabolite, "` ~ group + (1 | Subject_ID)"))
+
+    model <- tryCatch({
+      lmer(formula_lmm, data = temp_data)
+    }, error = function(e) {
+      message("  → Skipped: Model fitting error - ", e$message)
+      return(NULL)
+    })
+
+    if (is.null(model)) next
+
+    pairwise <- tryCatch({
+      pairs(emmeans(model, ~ group), adjust = "BH") %>%
+        as.data.frame() %>%
+        mutate(
+          Group1 = sub(" - .*", "", contrast),
+          Group2 = sub(".*- ", "", contrast),
+          signif = case_when(
+            p.value < 0.001 ~ "***",
+            p.value < 0.01  ~ "**",
+            p.value < 0.05  ~ "*",
+            TRUE            ~ "ns"
+          ),
+          label = paste0(signif, " p = ", formatC(p.value, format = "e", digits = 2)),
+          x = match(Group1, levels(temp_data$group)),
+          xend = match(Group2, levels(temp_data$group)),
+          xmid = (x + xend) / 2
+        )
+    }, error = function(e) {
+      message("  → Skipped: emmeans/pairs error - ", e$message)
+      return(NULL)
+    })
+
+    y_max <- max(temp_data[[metabolite]], na.rm = TRUE)
+    title_text <- ifelse(!is.na(metabolite_name) && metabolite_name != "", metabolite_name, paste0("ID_", metabolite))
+
+    p <- ggplot(temp_data, aes(x = group, y = .data[[metabolite]], fill = group, color = group)) +
+      geom_boxplot(outlier.shape = NA, color = "black", width = 0.5) +
+      geom_jitter(width = 0.2, alpha = 0.6, size = 0.5) +
+      scale_fill_manual(values = colors) +
+      scale_color_manual(values = colors) +
+      scale_x_discrete(labels = c(
+        "low" = paste0("Low Sebum\n(< 3.5 µg/cm²)\n(n = ", low_n, ")"),
+        "medium" = paste0("Medium Sebum\n(3.5–16.9 µg/cm²)\n(n = ", medium_n, ")"),
+        "high" = paste0("High Sebum\n(> 16.9 µg/cm²)\n(n = ", high_n, ")")
+      )) +
+      labs(
+        y = paste0("rclr ", title_text, "\n(m/z: ", mz_value, ", RT: ", rt_value, ")"),
+        x = NULL,
+        title = title_text
+      ) +
+      theme_minimal() +
+      theme(
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        plot.title = element_text(size = 13, hjust = 0.5),
+        axis.line = element_line(color = "black"),
+        panel.grid = element_blank(),
+        legend.position = "none"
+      ) +
+      expand_limits(y = y_max * 1.2) +
+      coord_cartesian(clip = "off")
+
+    if (!is.null(pairwise)) {
+      pairwise$y <- seq(from = y_max * 1.05, length.out = nrow(pairwise), by = y_max * 0.3)
+      p <- p +
+        geom_segment(data = pairwise,
+                     aes(x = x, xend = xend, y = y, yend = y),
+                     inherit.aes = FALSE, color = "black") +
+        geom_text(data = pairwise,
+                  aes(x = xmid, y = y + y_max * 0.15, label = label),
+                  inherit.aes = FALSE, size = 4)
+
+      # Store pairwise results with metabolite info
+      pairwise$Metabolite_ID <- metabolite
+      pairwise$Metabolite_Name <- title_text
+      pairwise$mz <- mz_value
+      pairwise$RT <- rt_value
+      pairwise$Superclass <- superclass
+      results_df[[length(results_df) + 1]] <- pairwise
+    }
+
+    plot_name <- ifelse(!is.na(superclass) && superclass != "", paste0(superclass, "_", metabolite), metabolite)
+    plot_list[[plot_name]] <- p
+    message("  → Success: Plot added for ", metabolite)
+  }
+
+  comparison_df <- do.call(rbind, results_df)
+
+  return(list(
+    plots = plot_list,
+    comparisons = comparison_df
+  ))
+}
+
+
+```
+```{r}
+vip_plots_list_lmm <- make_grouped_vip_boxplots_return_lmm(VIPs_selected, clr_long_subject, canopus)
+```
+```{r}
+library(ggpubr)
+
+# Arrange plots from the 'plots' sublist
+final_figure_lmm <- ggarrange(
+  vip_plots_list_lmm$plots[[1]], vip_plots_list_lmm$plots[[4]], vip_plots_list_lmm$plots[[3]], vip_plots_list_lmm$plots[[8]],
+  vip_plots_list_lmm$plots[[2]], vip_plots_list_lmm$plots[[5]], vip_plots_list_lmm$plots[[6]], vip_plots_list_lmm$plots[[7]],
+  ncol = 4, nrow = 2,
+  labels = c("d", "e", "f", "g", "h", "i", "j", "k"),
   font.label = list(size = 16, face = "bold")
 )
 
-# Show it in the viewer
-print(final_figure)
+# Print the arranged figure
+print(final_figure_lmm)
+
 ```
+```{r}
+PCA_PLSDA2 <- ggarrange(PCA_plot_sebum_extreme, NULL, widths = c(1,1.5), labels = c("b", "c"), font.label = list(size = 16, face = "bold"), common.legend = TRUE, legend="bottom")
+```
+
+```{r}
+top_grid_lmm <- ggarrange(Figure5a_lmm,
+  PCA_PLSDA2,
+  final_figure_lmm,
+  ncol = 1, nrow = 3,
+  labels = c("a", "", ""),
+  heights = c(1.25,1.25,3.5),
+  font.label = list(size = 16, face = "bold")
+)
+
+```
+
+
+```{r}
+# 3. Save the full layout
+ggsave("../figures/main/Figure5a-k.png",
+       plot = top_grid_lmm,
+       width = 20, height = 16, dpi = 300)
+
+ggsave("../figures/main/Figure5a-k.svg",
+       plot = top_grid_lmm,
+       width = 20, height = 16)
+```
+
+
+# Figure 6
+
+# generate a correlation matrix similar as before
+```{r}
+df_relative <-df_rel_abundance
+```
+
+```{r}
+# Get the current taxonomy column names (excluding SampleID and Face_site)
+tax_cols <- setdiff(colnames(df_relative), c("SampleID"))
+
+# Function to extract the correct taxonomic label
+extract_lowest_defined_level <- function(tax_string) {
+  parts <- str_split(tax_string, ";\\s*")[[1]]
+  parts <- parts[parts != ""]  # remove empty parts
+  if (length(parts) == 0) return("Unclassified")
+  
+  last <- parts[length(parts)]
+  
+  if (str_detect(last, "g__uncultured") && length(parts) > 1) {
+    return(parts[length(parts) - 1])  # return level above (e.g. family)
+  } else {
+    return(last)
+  }
+}
+
+# Apply the function to all taxonomic column names
+cleaned_names <- map_chr(tax_cols, extract_lowest_defined_level)
+
+
+# Get the mapping between new (collapsed) names and original columns
+cleaned_names <- map_chr(tax_cols, extract_lowest_defined_level)
+
+# Create a new dataframe with collapsed relative abundances
+df_tax_collapsed <- df_relative[, "SampleID", drop=FALSE]  # keep SampleID
+
+for (taxon in unique(cleaned_names)) {
+  matched_cols <- tax_cols[cleaned_names == taxon]
+  df_tax_collapsed[[taxon]] <- rowSums(df_relative[, matched_cols, drop=FALSE])
+}
+
+```
+
+```{r}
+row_sums <- rowSums(df_tax_collapsed %>% select(-SampleID))
+summary(row_sums)
+
+```
+
+```{r}
+df_merged2 <- df_tax_collapsed %>%
+  left_join(Shiseido_metadata, by = c("SampleID" = "SampleID_2"))
+
+```
+
+
+##HEATMAP amino acids and all genera
+
+```{r}
+# Required libraries
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(rstatix)
+library(ggpubr)
+
+# Define taxa & metrics for x-axis
+taxa_vars <- c("g__Staphylococcus", "f__Neisseriaceae", "g__Lawsonella", "g__Corynebacterium", 
+               "g__Streptococcus", "g__Enhydrobacter", "g__Acinetobacter", "g__Xanthomonas", 
+               "g__Haemophilus", "g__Paracoccus", "g__Pseudomonas", "g__Prevotella", 
+               "g__Neisseria", "g__Veillonella", "g__Sphingomonas", "g__Lactobacillus", "g__Cutibacterium",
+               "shannon_entropy", "faith_pd")
+
+# Define biophysical variables for y-axis
+x_vars <- c("water_content","TEWL_transepidermal_water_loss_",  "SC_protein", "sebum",  
+            "a", "L", "b", "skin_temparature", "age", "cutemeter_R2", "cutemeter_R7")
+
+```
+
+```{r}
+x_vars <- c("water_content","TEWL_transepidermal_water_loss_",  "SC_protein", "sebum",  
+            "a", "L", "b", "skin_temparature", "age", "cutemeter_R2", "cutemeter_R7","Asp", "Glu", "hyP", "Ser", "Asn", "Gly", "Gln", "Thr", "Ala", "Tau",
+                 "His", "Cit", "Pro", "Arg", "Val", "Tyr", "Met", "Cys2", "Ile", "Leu",
+                 "Orn", "Lys", "Phe", "Trp", "Total_AAs","Urea","Creatinine","UCA","LA","PCA","D.glucosamine","Total_org._NMF")
+
+```
+
+```{r}
+x_axis_labels <- c(
+  "g__Staphylococcus" = "Staphylococcus",
+  "f__Neisseriaceae" = "Neisseriaceae",
+  "g__Lawsonella" = "Lawsonella",
+  "g__Corynebacterium" = "Corynebacterium",
+  "g__Streptococcus" = "Streptococcus",
+  "g__Enhydrobacter" = "Enhydrobacter",
+  "g__Acinetobacter" = "Acinetobacter",
+  "g__Xanthomonas" = "Xanthomonas",
+  "g__Haemophilus" = "Haemophilus",
+  "g__Paracoccus" = "Paracoccus",
+  "g__Pseudomonas" = "Pseudomonas",
+  "g__Prevotella" = "Prevotella",
+  "g__Neisseria" = "Neisseria",
+  "g__Veillonella" = "Veillonella",
+  "g__Sphingomonas" = "Sphingomonas",
+  "g__Lactobacillus" = "Lactobacillus",
+  "g__Cutibacterium" = "Cutibacterium",
+  "shannon_entropy" = "Shannon Entropy",
+  "faith_pd" = "Faith PD"
+)
+
+y_axis_labels <- c(
+  "L" = "Skin Brightness (L*)",
+  "a" = "Skin Redness (a*)",
+  "b" = "Skin Yellowness (b*)",
+  "cutemeter_R2" = "Cutemeter R2 (Elasticity Index)",
+  "cutemeter_R7" = "Cutemeter R7 (Elasticity Recovery Index)",
+  "sebum" = "Sebum (µg/cm²)",
+  "water_content" = "Water Content (a.u.)",
+  "TEWL_transepidermal_water_loss_" = "TEWL (g/[m²·h])",
+  "SC_protein" = "SC Protein (µg/cm²)", 
+  "skin_temparature" = "Skin Temperature (°C)",
+  "age" = "Age (years)"
+)
+
+
+```
+
+```{r}
+
+
+y_axis_labels <- c(
+  "L" = "Skin Brightness (L*)",
+  "a" = "Skin Redness (a*)",
+  "b" = "Skin Yellowness (b*)",
+  "cutemeter_R2" = "Cutemeter R2 (Elasticity Index)",
+  "cutemeter_R7" = "Cutemeter R7 (Elasticity Recovery Index)",
+  "sebum" = "Sebum (µg/cm²)",
+  "water_content" = "Water Content (a.u.)",
+  "TEWL_transepidermal_water_loss_" = "TEWL (g/[m²·h])",
+  "SC_protein" = "SC Protein (µg/cm²)", 
+  "skin_temparature" = "Skin Temperature (°C)",
+  "age" = "Age (years)",
+  "Asp" = "Aspartic Acid",
+  "Glu" = "Glutamic Acid",
+  "hyP" = "Hydroxyproline",
+  "Ser" = "Serine",
+  "Asn" = "Asparagine",
+  "Gly" = "Glycine",
+  "Gln" = "Glutamine",
+  "Thr" = "Threonine",
+  "Ala" = "Alanine",
+  "Tau" = "Taurine",
+  "His" = "Histidine",
+  "Cit" = "Citrulline",
+  "Pro" = "Proline",
+  "Arg" = "Arginine",
+  "Val" = "Valine",
+  "Tyr" = "Tyrosine",
+  "Met" = "Methionine",
+  "Cys2" = "Cystine",
+  "Ile" = "Isoleucine",
+  "Leu" = "Leucine",
+  "Orn" = "Ornithine",
+  "Lys" = "Lysine",
+  "Phe" = "Phenylalanine",
+  "Trp" = "Tryptophan",
+  "Total_AAs" = "Total Amino Acids",
+  "Urea" = "Urea",
+  "Creatinine" = "Creatinine",
+  "UCA" = "Urocanic Acid",
+  "LA" = "Lactic Acid",
+  "PCA" = "Pyrrolidone Carboxylic Acid",
+  "D.glucosamine" = "D-Glucosamine",
+  "Total_org._NMF" = "Total Organic NMF"
+)
+
+```
+
+
+```{r}
+results <- list()
+
+for (x in taxa_vars) {
+  for (y in x_vars) {
+    sub_df <- df_merged2 %>%
+      select(all_of(c(x, y))) %>%
+      filter(!is.na(.data[[x]]) & !is.na(.data[[y]]))
+
+    if (nrow(sub_df) < 3) next
+
+    p_x <- shapiro.test(sub_df[[x]])$p.value
+    p_y <- shapiro.test(sub_df[[y]])$p.value
+
+    method <- ifelse(p_x > 0.05 & p_y > 0.05, "pearson", "spearman")
+    result <- cor.test(sub_df[[x]], sub_df[[y]], method = method)
+
+    results[[paste(x, y, sep = "_")]] <- data.frame(
+      X = x,
+      Y = y,
+      Correlation = result$estimate,
+      p_value = result$p.value,
+      method = method
+    )
+  }
+}
+
+cor_df <- bind_rows(results)
+
+
+```
+
+```{r}
+cor_df <- cor_df %>%
+  mutate(stars = case_when(
+    p_value < 0.001 ~ "***",
+    p_value < 0.01  ~ "**",
+    p_value < 0.05  ~ "*",
+    TRUE            ~ ""
+  )) %>%
+  mutate(
+    X_label = x_axis_labels[X],
+    Y_label = y_axis_labels[Y]
+  )
+
+# Preserve order in plot
+cor_df$X_label <- factor(cor_df$X_label, levels = x_axis_labels[taxa_vars])
+cor_df$Y_label <- factor(cor_df$Y_label, levels = rev(y_axis_labels[x_vars]))
+
+```
+
+```{r}
+heatmap_genera <- ggplot(cor_df, aes(x = X_label, y = Y_label, fill = Correlation)) +
+  geom_tile(color = "white", width = 0.9, height = 0.9) +
+  geom_text(aes(label = stars), color = "black", size = 5, hjust = 0.5, vjust = 0.8) +
+  scale_fill_gradient2(low = "#4575b4", mid = "white", high = "#e08214",
+                       midpoint = 0, limits = c(-0.5, 0.5), name = "Spearman ρ") +
+  theme_minimal() +
+  labs(x = NULL, y = NULL) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text = element_text(size = 12),
+    axis.ticks = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    panel.background = element_blank(),
+    panel.grid = element_blank()
+  )
+
+print(heatmap_genera)
+
+```
+
+```{r}
+# 3. Save the full layout
+ggsave("../figures/main/Figure6a.png",
+       plot = heatmap_genera,
+       width = 16, height = 9, dpi = 300)
+
+ggsave("../figures/main/Figure6a.svg",
+       plot = heatmap_genera,
+       width = 16, height = 9)
+```
+
+
+# Combine svg and ggplot
+
+```{r}
+library(ggplot2)
+library(grid)
+library(gridExtra)   # for grid.arrange()
+library(png)         # for reading PNGs
+library(rsvg)        # for SVG → PNG conversion
+
+```
+
+```{r}
+# Convert SVG to PNG (in-memory)
+svg_raster <- rsvg::rsvg_png("../figures/main/Figure6b.svg")
+
+# Create raster grob from PNG
+svg_grob <- grid::rasterGrob(png::readPNG(svg_raster), interpolate = TRUE)
+
+```
+
+
+```{r}
+label_a <- textGrob("a", x = unit(0, "npc"), y = unit(1, "npc"), just = c("left", "top"),
+                    gp = gpar(fontsize = 18, fontface = "bold"))
+
+label_b <- textGrob("b", x = unit(0, "npc"), y = unit(1, "npc"), just = c("left", "top"),
+                    gp = gpar(fontsize = 18, fontface = "bold"))
+
+# Add labels to the plots
+plot_a_labeled <- arrangeGrob(heatmap_genera, top = label_a)
+plot_b_labeled <- arrangeGrob(svg_grob, top = label_b)
+
+```
+```{r}
+Figure6 <- grid.arrange(plot_a_labeled, plot_b_labeled, nrow = 2)
+
+```
+```{r}
+ggsave("../figures/metadata/Figure6.svg",
+       plot = Figure6,
+       width = 16, height = 18)
+```
+
+
