@@ -1,6 +1,6 @@
 # Sebum-Associated Shifts in Facial Skin Metabolome and Microbiome Reveal Markers of Sebaceous Balance
 
-*(De Pessemier et al., submitted to Cell Reports, 2026)*
+*(De Pessemier et al., submitted to Cell iScience, 2026)*
 
 ---
 
