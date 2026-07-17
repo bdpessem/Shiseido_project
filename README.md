@@ -7,4 +7,4 @@
 This repository contains the analysis code, processed data, and figure scripts for the manuscript:  
 > **“Sebum-Associated Shifts in Facial Skin Metabolome and Microbiome Reveal Markers of Sebaceous Balance.”**
 
-<img width="4025" height="4374" alt="Figure1" src="https://github.com/user-attachments/assets/29a8b56d-9858-4fe9-a68b-18eaa2b97bf8" />
+<img width="4025" height="4374" alt="Figure1" src="https://github.com/user-attachments/assets/d0c10c30-87a6-4a98-badd-0907fb93cd67" />
