@@ -97,6 +97,7 @@ library(ggcorrplot)
 library(lme4)
 library(lmerTest) # for p-values in lmer
 library(dplyr)
+library(performance)
 
 ```
 
@@ -252,7 +253,7 @@ run_nonparam_tests <- function(df, value_var, y_positions) {
     mutate(
       signif = case_when(
         p_adj < 0.001 ~ "***", p_adj < 0.01 ~ "**",
-        p_adj < 0.05  ~ "*",  TRUE           ~ "ns"
+        p_adj < 0.05  ~ "*",  TRUE           ~ ""#"ns"
       ),
       label = paste0(signif, " p = ", formatC(p_adj, format = "e", digits = 2))
     )
@@ -285,7 +286,7 @@ tukey_a <- TukeyHSD(model_aov_a)$Face_site %>%
   mutate(
     signif = case_when(
       `p adj` < 0.001 ~ "***", `p adj` < 0.01 ~ "**",
-      `p adj` < 0.05  ~ "*",  TRUE             ~ "ns"
+      `p adj` < 0.05  ~ "*",  TRUE             ~ ""#"ns"
     ),
     label = paste0(signif, " p = ", formatC(`p adj`, format = "e", digits = 2))
   )
@@ -321,15 +322,29 @@ df_L    <- prep_avg("L")
 x_labels_L <- make_x_labels(df_L, "Face_site")
 
 model_aov_L <- aov(L ~ Face_site, data = df_L)
+#tukey_L <- TukeyHSD(model_aov_L)$Face_site %>%
+#  as.data.frame() %>%
+#  tibble::rownames_to_column("Comparison") %>%
+#  mutate(
+#    signif = case_when(
+#      `p adj` < 0.001 ~ "***", `p adj` < 0.01 ~ "**",
+#      `p adj` < 0.05  ~ "*",  TRUE             ~ "ns"
+#    ),
+#    label = paste0(signif, " p = ", formatC(`p adj`, format = "e", digits = 2))
+#  )
+
 tukey_L <- TukeyHSD(model_aov_L)$Face_site %>%
   as.data.frame() %>%
   tibble::rownames_to_column("Comparison") %>%
   mutate(
     signif = case_when(
       `p adj` < 0.001 ~ "***", `p adj` < 0.01 ~ "**",
-      `p adj` < 0.05  ~ "*",  TRUE             ~ "ns"
+      `p adj` < 0.05  ~ "*",  TRUE             ~ ""#"ns"
     ),
-    label = paste0(signif, " p = ", formatC(`p adj`, format = "e", digits = 2))
+    p_str = ifelse(`p adj` < 2.2e-16,
+                    "p < 2.2e-16",
+                    paste0("p = ", formatC(`p adj`, format = "e", digits = 2))),
+    label = paste0(signif, " ", p_str)
   )
 
 annot_L <- data.frame(
@@ -545,14 +560,14 @@ Skin_Sebum_KW_subjects <- ggplot(df_avg_sebum,
 # ── Assemble Figure 2 ─────────────────────────────────────────────────────────
 boxplot_fg <- ggarrange(
   Skin_Redness, Skin_Brightness, Skin_Sebum_subset, Skin_Temp, Skin_WaterContent,
-  ncol = 5, labels = c("a","b","c","d","e"),
+  ncol = 5, labels = c("A","B","C","D","E"),
   common.legend = TRUE, legend = "bottom",
   font.label = list(size = 18, face = "bold")
 )
 
 corrplot <- ggarrange(
   e_LM_avg, skinredness_sebum_LM_avg, skinbrightness_sebum_LM_avg,
-  ncol = 3, labels = c("f","g","h"),
+  ncol = 3, labels = c("F","G","H"),
   common.legend = TRUE, legend = "bottom",
   font.label = list(size = 18, face = "bold")
 )
@@ -560,18 +575,357 @@ corrplot <- ggarrange(
 top_grid <- ggarrange(
   boxplot_fg, corrplot, Skin_Sebum_KW_subjects,
   ncol = 1, nrow = 3,
-  labels = c("", "", "i"),
+  labels = c("", "", "I"),
   heights = c(1, 1, 0.75),
   font.label = list(size = 18, face = "bold")
 )
 
 
 ```
+```{r}
+print(tukey_L$`p adj`[tukey_L$Comparison == "Cheek-Forehead"], digits = 22)
+```
 
 ```{r}
 # ── Save ──────────────────────────────────────────────────────────────────────
 ggsave("../figures/main/Figure2.png", plot = top_grid, width = 17, height = 14, dpi = 300)
 ggsave("../figures/main/Figure2.svg", plot = top_grid, width = 17, height = 14)
+```
+
+#```{r}
+#kw_test <- kruskal.test(sebum ~ Subject_ID, data = metadata_with_runorder_clean)
+#exact_p <- kw_test$p.value
+
+#```
+
+```{r}
+q <- quantile(metadata_with_runorder$sebum, probs = c(0.25, 0.75), na.rm = TRUE)
+low_thresh <- q[1]
+high_thresh <- q[2]
+
+metadata_with_runorder_clean <- metadata_with_runorder %>%
+  filter(!is.na(Subject_ID), !is.na(sebum))
+
+# 2. Assign sebum groups
+metadata_with_runorder_clean <- metadata_with_runorder_clean %>%
+  mutate(sebum_group = case_when(
+    sebum < low_thresh ~ "low",
+    sebum >= low_thresh & sebum <= high_thresh ~ "medium",
+    sebum > high_thresh ~ "high"
+  ))
+
+```
+
+```{r}
+# Calculate median sebum per Subject_ID
+subject_median_info <- metadata_with_runorder_clean %>%
+  group_by(Subject_ID) %>%
+  summarise(
+    median_sebum = median(sebum, na.rm = TRUE)
+  ) %>%
+  mutate(sebum_group_median = case_when(
+    median_sebum < low_thresh ~ "low",
+    median_sebum >= low_thresh & median_sebum <= high_thresh ~ "medium",
+    median_sebum > high_thresh ~ "high"
+  ))
+
+```
+
+
+
+```{r}
+# Merge back onto the sample-level metadata
+metadata_with_runorder_clean <- metadata_with_runorder_clean %>%
+  left_join(subject_median_info %>% select(Subject_ID, sebum_group_median), by = "Subject_ID")
+
+# Set factor levels manually so Low, Medium, High appear in the correct order
+metadata_with_runorder_clean$sebum_group_median <- factor(metadata_with_runorder_clean$sebum_group_median, 
+                                       levels = c("low", "medium", "high"))
+
+```
+
+```{r}
+kruskal_test_age <- kruskal.test(age ~ sebum_group_median, data = metadata_with_runorder_clean)
+kruskal_test_age
+
+```
+```{r}
+q <- quantile(metadata_with_runorder$sebum, probs = c(0.25, 0.75), na.rm = TRUE)
+low_thresh <- q[1]
+high_thresh <- q[2]
+
+metadata_with_runorder_clean <- metadata_with_runorder %>%
+  filter(!is.na(Subject_ID), !is.na(sebum))
+
+# 2. Assign sebum groups
+metadata_with_runorder_clean <- metadata_with_runorder_clean %>%
+  mutate(sebum_group = case_when(
+    sebum < low_thresh ~ "low",
+    sebum >= low_thresh & sebum <= high_thresh ~ "medium",
+    sebum > high_thresh ~ "high"
+  ))
+```
+
+```{r}
+kruskal_test_age <- kruskal.test(age ~ sebum_group, data = metadata_with_runorder_clean)
+kruskal_test_age
+
+```
+# Supplementary Fig. 1
+# age-stratefied analysis
+```{r}
+# ── Prepare data ──────────────────────────────────────────────────────────────
+df_age_sebum <- Shiseido_metadata %>%
+  filter(Face_site %in% c("Forehead", "Nose", "Cheek"),
+         !is.na(sebum), !is.na(age)) %>%
+  mutate(
+    sebum      = as.numeric(sebum),
+    age        = as.numeric(age),
+    Subject_ID = as.factor(Subject_ID),
+    Face_site  = factor(Face_site, levels = c("Forehead", "Nose", "Cheek"))
+  ) %>%
+  group_by(Subject_ID, Face_site, age) %>%
+  summarise(mean_sebum = mean(sebum, na.rm = TRUE), .groups = "drop")
+
+# ── Fit LMM: age + Face_site as fixed effects, Subject_ID as random ───────────
+model_age_sebum <- lmer(
+  mean_sebum ~ age + Face_site + (1 | Subject_ID),
+  data = df_age_sebum
+)
+
+
+smry <- summary(model_age_sebum)$coefficients
+
+beta  <- round(smry["age", "Estimate"], 3)
+p_val <- smry["age", "Pr(>|t|)"]
+p_lab <- ifelse(p_val < 0.001,
+                paste0("β = ", beta, ", p < 0.001"),
+                paste0("β = ", beta, ", p = ", signif(p_val, 2)))
+
+# ── Legend labels with n ───────────────────────────────────────────────────────
+leg_labels <- make_legend_labels(df_age_sebum, "Face_site")
+
+# ── Plot ───────────────────────────────────────────────────────────────────────
+Age_Sebum_LMM <- ggplot(df_age_sebum, aes(x = age, y = mean_sebum)) +
+  geom_point(aes(fill = Face_site, color = Face_site),
+             shape = 21, size = 3, alpha = 0.6, stroke = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "black",
+              linewidth = 0.8, fill = "grey80") +
+  annotate("text", x = Inf, y = Inf, label = p_lab,
+           hjust = 1.1, vjust = 1.8, size = 4.5) +
+  scale_fill_manual(values = fill_colors,    labels = leg_labels, name = "Face Site") +
+  scale_color_manual(values = border_colors, labels = leg_labels, name = "Face Site") +
+  labs(
+    x     = "Age (years)",
+    y     = expression("Mean Sebum Content (" * mu * "g/cm"^2 * ")"),
+    title = "Association between age and sebum content\n(LMM, corrected for face site and subject)"
+  ) +
+  shared_theme_minimal
+
+Age_Sebum_LMM
+```
+```{r}
+# ── Save ──────────────────────────────────────────────────────────────────────
+#ggsave("../figures/main/Figure_agevssebum.png", plot = Age_Sebum_LMM, width = 7, height = 6, dpi = 300)
+#ggsave("../figures/main/Figure_agevssebum.svg", plot = Age_Sebum_LMM, width = 7, height = 6)
+```
+
+```{r}
+df_age_sebum <- df_age_sebum %>%
+  mutate(age_group = cut(age,
+    breaks = c(0, 29, 39, Inf),
+    labels = c("20–29", "30–39", "40+")
+  ))
+
+Age_Sebum_LMM_stratified <- ggplot(df_age_sebum, 
+    aes(x = age, y = mean_sebum)) +
+  geom_point(aes(fill = Face_site, color = Face_site),
+             shape = 21, size = 3, alpha = 0.6, stroke = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "black",
+              linewidth = 0.8, fill = "grey80") +
+  # Add vertical age-group dividers
+  geom_vline(xintercept = c(29.5, 39.5), linetype = "dashed", 
+             color = "grey50", linewidth = 0.5) +
+  # Age group labels at top
+  annotate("text", x = c(25, 35, 47), y = Inf,
+           label = c("20–29", "30–39", "40+"),
+           vjust = 1.5, size = 4, color = "grey40") +
+  annotate("text", x = Inf, y = Inf, label = p_lab,
+           hjust = 1.1, vjust = 3.5, size = 4.5) +
+  scale_fill_manual(values = fill_colors, labels = leg_labels, name = "Face Site") +
+  scale_color_manual(values = border_colors, labels = leg_labels, name = "Face Site") +
+  labs(
+    x     = "Age (years)",
+    y     = expression("Mean Sebum Content (" * mu * "g/cm"^2 * ")"),
+    title = "Association between age and sebum content\n(LMM, corrected for face site and subject)"
+  ) +
+  shared_theme_minimal
+```
+
+```{r}
+# Boxplot by age group
+df_age_sebum <- df_age_sebum %>%
+  mutate(age_group = cut(age,
+    breaks = c(0, 29, 39, Inf),
+    labels = c("20–29", "30–39", "40+")
+  ))
+
+# Count n per group for x labels
+age_group_labels <- df_age_sebum %>%
+  distinct(Subject_ID, age_group) %>%   # one row per subject
+  count(age_group) %>%
+  mutate(label = paste0(age_group, "\n(n=", n, " subjects)")) %>%
+  { setNames(.$label, .$age_group) }
+
+# Kruskal-Wallis across age groups
+kw_age <- kruskal.test(mean_sebum ~ age_group, data = df_age_sebum)
+kw_lab <- paste0("Kruskal-Wallis p = ", signif(kw_age$p.value, 2))
+
+
+
+# ── Boxplot: swap shared_theme_bw → shared_theme_minimal ─────────────────────
+library(ggnewscale)
+
+Age_Sebum_Boxplot <- ggplot(df_age_sebum,
+    aes(x = age_group, y = mean_sebum)) +
+  # ── Boxplot with age_group fill ───────────────────────────────────────────
+  geom_boxplot(
+    aes(fill = age_group),
+    outlier.shape = NA, color = "black", alpha = 0.7
+  ) +
+  scale_fill_manual(
+    values = c("20–29" = "#74add1", "30–39" = "#fee090", "40+" = "#f46d43"),
+    name   = "Age Group"
+  ) +
+  # ── Reset fill scale for points ───────────────────────────────────────────
+  new_scale_fill() +
+  geom_point(
+    aes(fill = Face_site, color = Face_site),
+    shape    = 21,
+    position = position_jitter(width = 0.2),
+    size     = 3,
+    stroke   = 0.6,
+    alpha    = 0.6
+  ) +
+  scale_fill_manual(values = fill_colors,    labels = leg_labels, name = "Face Site") +
+  scale_color_manual(values = border_colors, labels = leg_labels, name = "Face Site") +
+  scale_x_discrete(labels = age_group_labels) +
+  annotate("text", x = 2, y = Inf, label = kw_lab,
+           vjust = 1.8, size = 4) +
+  labs(
+    x     = "Age Group",
+    y     = expression("Mean Sebum Content (" * mu * "g/cm"^2 * ")"),
+    title = "Sebum content by age group"
+  ) +
+  shared_theme_minimal
+
+# ── Combine ───────────────────────────────────────────────────────────────────
+Fig_age_sebum <- ggarrange(
+  Age_Sebum_LMM_stratified, Age_Sebum_Boxplot,
+  ncol    = 2,
+  align  = "hv",
+  labels  = c("A", "B"),
+  font.label = list(size = 18, face = "bold"),
+  widths = c(1.5, 1),
+  common.legend = FALSE,   # FALSE because the two legends are different (Face Site vs Age Group)
+  legend  = "bottom"
+)
+```
+
+```{r}
+# ── Save ──────────────────────────────────────────────────────────────────────
+ggsave("../figures/supplementary/suppl_fig1.png",
+       plot = Fig_age_sebum, width = 14, height = 6, dpi = 300)
+ggsave("../figures/supplementary/suppl_fig1.svg",
+       plot = Fig_age_sebum, width = 14, height = 6)
+```
+
+```{r}
+# ── Save ──────────────────────────────────────────────────────────────────────
+#ggsave("../figures/rebuttal/Figure_age_sebum_stratified_rebuttal.png",
+#       plot = Fig_age_sebum, width = 14, height = 6, dpi = 300)
+#ggsave("../figures/rebuttal/Figure_age_sebum_stratified_rebuttal.svg",
+#       plot = Fig_age_sebum, width = 14, height = 6)
+```
+
+
+```{r}
+# ── 0. Prep (already done in your chunk, just ensuring it's available) ────────
+#df_vp <- df_age_sebum   # has: Subject_ID, age, Face_site, mean_sebum
+
+
+
+# 1. ICC FOR AGE  (should return ICC = 1.0)
+
+
+# Age ~ (1 | Subject_ID): how much of age variance is between-subject?
+#icc_model <- lmer(age ~ (1 | Subject_ID), data = df_vp)
+#icc_result <- icc(icc_model)   # from {performance}
+#print(icc_result)
+# ICC should = 1.00 — all age variance is between subjects, none within
+
+
+# 2. VARIANCE PARTITIONING  (unique Age fraction should = 0)
+
+
+
+# Build model matrices (no intercept column)
+#X_age  <- model.matrix(~ age,        data = df_vp)[, -1, drop = FALSE]
+#X_subj <- model.matrix(~ Subject_ID, data = df_vp)[, -1, drop = FALSE]
+#Y      <- matrix(df_vp$mean_sebum, ncol = 1)
+
+#vp <- varpart(Y, X_age, X_subj)
+#print(vp)
+# Fractions to report:
+#   [a]       Unique Age        → ≈ 0
+#   [b]       Shared            → all explained variance lives here
+#   [c]       Unique Subject ID → ≈ 0 (age IS subject ID)
+#   [a+b+c]   Total explained
+
+# Pull the numbers cleanly
+#fracs <- vp$part$indfract
+#cat("\nUnique Age fraction:        ", round(fracs$Adj.R.squared[1], 6), "\n")
+#cat("Shared fraction:            ", round(fracs$Adj.R.squared[3], 6), "\n")
+#cat("Unique Subject ID fraction: ", round(fracs$Adj.R.squared[2], 6), "\n")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 3. SUPPLEMENTARY FIGURE: varpart Venn + ICC annotation
+# ════════════════════════════════════════════════════════════════════════════════
+#png("../figures/rebuttal/Figure_varpart_age_subjectID.png",
+#    width = 7, height = 5, units = "in", res = 300)
+
+#plot(vp,
+#     Xnames  = c("Age", "Subject ID"),
+#     bg      = c("#74add1", "#f46d43"),   # matches your age-group palette
+#     alpha   = 100,
+#     digits  = 3,
+#     cex     = 1.2)
+
+#title(
+#  main = "Variance partitioning: sebum ~ Age + Subject ID",
+#  sub  = sprintf(
+#    "ICC(age | Subject_ID) = %.2f  ·  Unique Age fraction = %.4f",
+#    icc_result$ICC_adjusted,          # from performance::icc()
+#    fracs$Adj.R.squared[1]
+# ),
+#  cex.sub = 0.9, col.sub = "grey40"
+#)
+
+#dev.off()
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 4. INLINE REPORTABLE NUMBERS (copy into methods/rebuttal text)
+# ════════════════════════════════════════════════════════════════════════════════
+#cat(sprintf(
+#  "\nReportable summary:\n
+#  ICC (age nested in Subject_ID) = %.3f\n
+#  Unique variance explained by Age (after Subject_ID) = %.4f\n
+#  → Age contributes zero independent explanatory variance for sebum content.\n",
+#  icc_result$ICC_adjusted,
+#  fracs$Adj.R.squared[1]
+#))
 ```
 
 # Figure 3
@@ -631,7 +985,7 @@ pairwise_df <- pairs(emmeans(model_lmm, ~ Face_site), adjust = "BH") %>%
       p.value < 0.001 ~ "***",
       p.value < 0.01  ~ "**",
       p.value < 0.05  ~ "*",
-      TRUE            ~ "ns"
+      TRUE            ~ ""#"ns"
     ),
     label = paste0(signif, " p = ", formatC(p.value, format = "e", digits = 2)),
     x     = match(Group1, levels(df_lmm$Face_site)),
@@ -691,7 +1045,7 @@ sebum_shannon_entropy_lmm <- ggplot(df_lmm, aes(x = shannon_entropy, y = sebum))
 boxplot_fg <- ggarrange(
   Shannon_entropy_plot_lmm, sebum_shannon_entropy_lmm,
   ncol = 2, nrow = 1,
-  labels = c("a", "b"),
+  labels = c("A", "B"),
   common.legend = FALSE,
   font.label = list(size = 18, face = "bold")
 )
@@ -699,7 +1053,7 @@ boxplot_fg <- ggarrange(
 empty_fg <- ggarrange(
   NULL, NULL,
   ncol = 2, nrow = 1,
-  labels = c("c", "d"),
+  labels = c("C", "D"),
   font.label = list(size = 18, face = "bold")
 )
 
@@ -711,7 +1065,6 @@ top_grid <- ggarrange(
 )
 ```
 
-
 ```{r}
 # ── Save ──────────────────────────────────────────────────────────────────────
 ggsave("../figures/main/Figure3.png", plot = top_grid,
@@ -720,8 +1073,77 @@ ggsave("../figures/main/Figure3.svg", plot = top_grid,
        width = 13, height = 11)
 ```
 
+```{r}
+# ── Save ──────────────────────────────────────────────────────────────────────
+#ggsave("../figures/main/Figure3_07072026.png", plot = top_grid,
+#       width = 13, height = 11, dpi = 300)
+#ggsave("../figures/main/Figure3_07072026.svg", plot = top_grid,
+#       width = 13, height = 11)
+```
 
-# Supplementary Figure 1
+
+```{r}
+
+# ── Prepare data: add age, filter NAs ────────────────────────────────────────
+df_lmm_age <- Shiseido_metadata %>%
+  filter(Face_site %in% c("Forehead", "Nose", "Cheek"),
+         !is.na(shannon_entropy),
+         !is.na(age),
+         Subject_ID != "na") %>%
+  mutate(
+    Subject_ID = as.factor(Subject_ID),
+    Face_site  = factor(Face_site, levels = c("Forehead", "Nose", "Cheek")),
+    age        = as.numeric(age),
+    shannon_entropy = as.numeric(shannon_entropy)
+  ) %>%
+  group_by(Subject_ID, Face_site, age) %>%
+  summarise(mean_shannon = mean(shannon_entropy, na.rm = TRUE), .groups = "drop")
+
+# ── Fit LMM: shannon ~ age + Face_site + (1|Subject_ID) ──────────────────────
+model_age_shannon <- lmer(
+  mean_shannon ~ age + Face_site + (1 | Subject_ID),
+  data = df_lmm_age
+)
+
+smry_shannon <- summary(model_age_shannon)$coefficients
+beta_s  <- round(smry_shannon["age", "Estimate"], 3)
+p_val_s <- smry_shannon["age", "Pr(>|t|)"]
+p_lab_s <- ifelse(p_val_s < 0.001,
+                  paste0("β = ", beta_s, ", p < 0.001"),
+                  paste0("β = ", beta_s, ", p = ", signif(p_val_s, 2)))
+
+# ── Legend labels ─────────────────────────────────────────────────────────────
+leg_labels_shannon <- make_legend_labels(df_lmm_age, "Face_site")
+
+# ── Plot: age vs Shannon entropy ──────────────────────────────────────────────
+Age_Shannon_LMM <- ggplot(df_lmm_age, aes(x = age, y = mean_shannon)) +
+  geom_point(aes(fill = Face_site, color = Face_site),
+             shape = 21, size = 3, alpha = 0.6, stroke = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "black",
+              linewidth = 0.8, fill = "grey80") +
+  # Age group dividers to match the sebum stratified plot
+  geom_vline(xintercept = c(29.5, 39.5), linetype = "dashed",
+             color = "grey50", linewidth = 0.5) +
+  annotate("text", x = c(25, 35, 47), y = Inf,
+           label = c("20–29", "30–39", "40+"),
+           vjust = 1.5, size = 4, color = "grey40") +
+  annotate("text", x = Inf, y = Inf, label = p_lab_s,
+           hjust = 1.1, vjust = 3.5, size = 4.5) +
+  scale_fill_manual(values = fill_colors,    labels = leg_labels_shannon, name = "Face Site") +
+  scale_color_manual(values = border_colors, labels = leg_labels_shannon, name = "Face Site") +
+  labs(
+    x     = "Age (years)",
+    y     = "Mean Shannon Entropy",
+    title = "Association between age and Shannon entropy\n(LMM, corrected for face site and subject)"
+  ) +
+  shared_theme_minimal
+
+Age_Shannon_LMM
+
+```
+
+
+# Supplementary Figure 2
 
 ```{r}
 # ── Helper: age correlation scatter ──────────────────────────────────────────
@@ -832,7 +1254,7 @@ top_grid_suppl1 <- ggarrange(
   r7_plot,
   ncol          = 2,
   nrow          = 3,
-  labels        = c("a","b","c","d","e","f"),
+  labels        = c("A","B","C","D","E","F"),
   common.legend = TRUE,
   legend        = "bottom",
   font.label    = list(size = 18, face = "bold")
@@ -840,22 +1262,34 @@ top_grid_suppl1 <- ggarrange(
 
 
 ```
-
-
 ```{r}
 # PNG
-png("../figures/supplementary/suppl_fig1.png", width = 14, height = 13, 
+png("../figures/supplementary/suppl_fig2.png", width = 14, height = 13, 
     units = "in", res = 300)
 print(top_grid_suppl1)
 dev.off()
 
 # SVG
-svg("../figures/supplementary/suppl_fig1.svg", width = 14, height = 13)
+svg("../figures/supplementary/suppl_fig2.svg", width = 14, height = 13)
 print(top_grid_suppl1)
 dev.off()
 ```
 
+```{r}
+# PNG
+#png("../figures/supplementary/suppl_fig1.png", width = 14, height = 13, 
+#    units = "in", res = 300)
+#print(top_grid_suppl1)
+#dev.off()
+
+# SVG
+#svg("../figures/supplementary/suppl_fig1.svg", width = 14, height = 13)
+#print(top_grid_suppl1)
+#dev.off()
+```
+
 Supplementary Figure 4-9
+# supplementary fig. 5-10
 
 ```{r}
 # Required libraries
@@ -870,7 +1304,8 @@ library(performance)
 library(patchwork)
 
 # ── Define x variables and labels ────────────────────────────────────────────
-x_vars <- c("water_content", "sebum", "a", "L", "skin_temparature")
+#x_vars <- c("water_content", "sebum", "a", "L", "skin_temparature")
+x_vars <- c("b")
 
 x_axis_labels <- c(
   "L"                = "Skin Brightness (L*)",
@@ -883,9 +1318,14 @@ x_axis_labels <- c(
 )
 
 # ── Define amino acids ────────────────────────────────────────────────────────
+#amino_acids <- c("Asp", "Glu", "hyP", "Ser", "Asn", "Gly", "Gln", "Thr", "Ala", "Tau",
+#                 "His", "Cit", "Pro", "Arg", "Val", "Tyr", "Met", "Cys2", "Ile", "Leu",
+#                 "Orn", "Lys", "Phe", "Trp", "Total_AAs")
+
 amino_acids <- c("Asp", "Glu", "hyP", "Ser", "Asn", "Gly", "Gln", "Thr", "Ala", "Tau",
                  "His", "Cit", "Pro", "Arg", "Val", "Tyr", "Met", "Cys2", "Ile", "Leu",
-                 "Orn", "Lys", "Phe", "Trp", "Total_AAs")
+                 "Orn", "Lys", "Phe", "Trp", "Total_AAs", "Urea", "Creatinine", "UCA",
+                 "LA", "PCA", "D.glucosamine", "Total_org._NMF")
 amino_acids_wo_protein <- paste0(amino_acids, "_wo_Protein")
 Shiseido_metadata$Total_AAs_wo_Protein <- Shiseido_metadata$Total_Aas_wo_Protein
 
@@ -1081,7 +1521,7 @@ plot_lmm_by_heatmap_model <- function(x_var, model_comparison_df, metadata_df) {
       plot_annotation(
         title      = paste0("Amino Acid / NMF vs ", x_axis_labels[[x_var]],
                             " (LMM adjusted for Face Site and Subject ID)"),
-        tag_levels = "a",
+        tag_levels = "A",
         theme      = theme(                        # ← controls the overall layout theme
           legend.position  = "bottom",
           legend.direction = "horizontal",
@@ -1090,12 +1530,12 @@ plot_lmm_by_heatmap_model <- function(x_var, model_comparison_df, metadata_df) {
       )
 
 
-    png(file.path(output_dir, paste0(x_var, "_vs_aminoacids.png")),
+    png(file.path(output_dir, paste0(x_var, "_vs_aminoacids_rebuttal.png")),
         width = 16, height = 20, units = "in", res = 300)
     print(combined_plot)
     dev.off()
 
-    svg(file.path(output_dir, paste0(x_var, "_vs_aminoacids.svg")),
+    svg(file.path(output_dir, paste0(x_var, "_vs_aminoacids_rebuttal.svg")),
         width = 16, height = 20)
     print(combined_plot)
     dev.off()
@@ -1229,7 +1669,7 @@ apply_tag_theme <- function(plot_list) {
 
 combined_plot <- wrap_plots(apply_tag_theme(plots), ncol = 4, guides = "collect") +
   plot_annotation(
-    tag_levels = "a",
+    tag_levels = "A",
     theme = theme(
       legend.position  = "bottom",
       legend.direction = "horizontal",
@@ -1242,7 +1682,7 @@ combined_plot <- wrap_plots(apply_tag_theme(plots), ncol = 4, guides = "collect"
 
 combined_plot_wo <- wrap_plots(apply_tag_theme(plots_wo), ncol = 4, guides = "collect") +
   plot_annotation(
-    tag_levels = "a",
+    tag_levels = "A",
     theme = theme(
       legend.position  = "bottom",
       legend.direction = "horizontal",
@@ -1255,22 +1695,22 @@ combined_plot_wo <- wrap_plots(apply_tag_theme(plots_wo), ncol = 4, guides = "co
 # ── Save ──────────────────────────────────────────────────────────────────────
 dir.create("../figures/supplementary/spearman", showWarnings = FALSE, recursive = TRUE)
 
-png("../figures/supplementary/spearman/Shannon_vs_AminoAcids_log.png",
+png("../figures/supplementary/spearman/Shannon_vs_AminoAcids_log_rebuttal.png",
     width = 20, height = 28, units = "in", res = 300)
 print(combined_plot)
 dev.off()
 
-png("../figures/supplementary/spearman/Shannon_vs_AminoAcids_no_protein_log.png",
+png("../figures/supplementary/spearman/Shannon_vs_AminoAcids_no_protein_log_rebuttal.png",
     width = 22, height = 28, units = "in", res = 300)
 print(combined_plot_wo)
 dev.off()
 
-svg("../figures/supplementary/spearman/Shannon_vs_AminoAcids_log.svg",
+svg("../figures/supplementary/spearman/Shannon_vs_AminoAcids_log_rebuttal.svg",
     width = 20, height = 28)
 print(combined_plot)
 dev.off()
 
-svg("../figures/supplementary/spearman/Shannon_vs_AminoAcids_no_protein_log.svg",
+svg("../figures/supplementary/spearman/Shannon_vs_AminoAcids_no_protein_log_rebuttal.svg",
     width = 22, height = 28)
 print(combined_plot_wo)
 dev.off()
@@ -1304,30 +1744,46 @@ combined_plot_wo <- wrap_plots(apply_tag_theme(plots_wo), ncol = 2, guides = "co
     )
   )
 # ── Save ──────────────────────────────────────────────────────────────────────
-dir.create("../figures/supplementary/spearman", showWarnings = FALSE, recursive = TRUE)
+#dir.create("../figures/supplementary/spearman", showWarnings = FALSE, recursive = TRUE)
 
-png("../figures/supplementary/spearman/Shannon_vs_NMFs_log.png",
+png("../figures/supplementary/spearman/Shannon_vs_NMFs_log_rebuttal.png",
     width = 10, height = 10, units = "in", res = 300)
 print(combined_plot)
 dev.off()
 
-png("../figures/supplementary/spearman/Shannon_vs_NMFs_no_protein_log.png",
+png("../figures/supplementary/spearman/Shannon_vs_NMFs_no_protein_log_rebuttal.png",
     width = 10, height = 10, units = "in", res = 300)
 print(combined_plot_wo)
 dev.off()
 
-svg("../figures/supplementary/spearman/Shannon_vs_NMFs_log.svg",
+svg("../figures/supplementary/spearman/Shannon_vs_NMFs_log_rebuttal.svg",
     width = 10, height = 10)
 print(combined_plot)
 dev.off()
 
-svg("../figures/supplementary/spearman/Shannon_vs_NMFs_no_protein_log.svg",
+svg("../figures/supplementary/spearman/Shannon_vs_NMFs_no_protein_log_rebuttal.svg",
     width = 10, height = 10)
 print(combined_plot_wo)
 dev.off()
 ```
 
 #Figure 4
+```{r}
+# ── Define x variables and labels ────────────────────────────────────────────
+#including age 
+#x_vars <- c("water_content", "sebum", "a", "L", "skin_temparature", "age")
+x_vars <- c("water_content", "sebum", "a", "L", "skin_temparature")
+
+x_axis_labels <- c(
+  "L"                = "Skin Brightness (L*)",
+  "a"                = "Skin Redness (a*)",
+  "b"                = "Skin Yellowness (b*)",
+  "sebum"            = "Sebum concentration (µg/cm²)",
+  "water_content"    = "Water Content (a.u.)",
+  "skin_temparature" = "Skin Temperature (°C)",
+  "age"              = "Age (years)"
+)
+```
 
 ```{r}
 library(dplyr)
@@ -1564,6 +2020,103 @@ heatmap_transposed <- make_heatmap(
 print(heatmap_final)
 print(heatmap_transposed)
 ```
+```{r}
+# 3. Save the full layout
+ggsave("../figures/rebuttal/Figure4_inclage.png", #venn_sebum_3.png
+       plot = heatmap_transposed,
+       width = 16, height = 6, dpi = 300)
+
+ggsave("../figures/rebuttal/Figure4_inclage.svg", #venn_sebum_3.svg
+       plot = heatmap_transposed,
+       width = 16, height = 6)
+```
+
+```{r}
+# ── Loop 4: sebum-adjusted LMM (reviewer request) ────────────────────────────
+# Tests whether phenotype–metabolite associations hold after adjusting for sebum
+# Only run for non-sebum x_vars
+
+x_vars_no_sebum <- c("water_content", "a", "L", "skin_temparature")
+
+lmm_results_sebum_adjusted <- list()
+
+for (x in x_vars_no_sebum) {
+  for (y in amino_acids_wo_protein) {
+    
+    sub_df <- Shiseido_metadata %>%
+      filter(Face_site %in% c("Forehead", "Nose", "Cheek"),
+             !is.na(Subject_ID), Subject_ID != "na") %>%
+      select(Subject_ID, Face_site, all_of(c(x, y, "sebum"))) %>%
+      filter(!is.na(.data[[x]]), !is.na(.data[[y]]), !is.na(sebum)) %>%
+      mutate(Subject_ID = as.factor(Subject_ID),
+             Face_site  = as.factor(Face_site))
+    
+    if (nrow(sub_df) < 5) next
+    
+    # Use best model type from AIC comparison (Loop 2) if available
+    key <- paste(x, y, sep = "_")
+    better_model <- if (!is.null(model_comparison_df) && key %in% rownames(model_comparison_df)) {
+      model_comparison_df[key, "Better_Model"]
+    } else {
+      "Untransformed or Similar"
+    }
+    
+    if (better_model == "Log-transformed") {
+      sub_df$log_x <- log10(pmax(as.numeric(sub_df[[x]]), 1))
+      sub_df$log_y <- log10(pmax(as.numeric(sub_df[[y]]), 1))
+      sub_df$log_sebum <- log10(pmax(sub_df$sebum, 1))
+      model <- tryCatch(
+        lmer(log_y ~ log_x + log_sebum + Face_site + (1|Subject_ID), data = sub_df),
+        error = function(e) NULL
+      )
+      term <- "log_x"
+    } else {
+      model <- tryCatch(
+        lmer(as.formula(paste(y, "~", x, "+ sebum + Face_site + (1|Subject_ID)")),
+             data = sub_df),
+        error = function(e) NULL
+      )
+      term <- x
+    }
+    
+    if (is.null(model)) next
+    effect_row <- broom.mixed::tidy(model) %>% filter(term == !!term)
+    if (nrow(effect_row) != 1) next
+    
+    lmm_results_sebum_adjusted[[key]] <- data.frame(
+      X       = x,
+      Y       = y,
+      Beta    = effect_row$estimate,
+      p_value = effect_row$p.value
+    )
+  }
+}
+
+lmm_df_sebum_adjusted <- finalize_lmm_df(lmm_results_sebum_adjusted)
+
+# ── Plot sebum-adjusted heatmap ───────────────────────────────────────────────
+heatmap_sebum_adjusted <- make_heatmap(
+  lmm_df_sebum_adjusted,
+  x_var = "Y_label", y_var = "X_label",
+  x_lab = "Amino Acids and NMFs (pmol/cm²)",
+  y_lab = NULL,
+  title = "Associations between skin biophysical properties and targeted metabolites\n(adjusted for sebum concentration)"
+)
+
+print(heatmap_sebum_adjusted)
+```
+
+
+```{r}
+ggsave("../figures/rebuttal/Figure4_sebum_adjusted.png",
+       plot = heatmap_sebum_adjusted,
+       width = 16, height = 6, dpi = 300)
+
+ggsave("../figures/rebuttal/Figure4_sebum_adjusted.svg",
+       plot = heatmap_sebum_adjusted,
+       width = 16, height = 6)
+```
+
 
 #Supplementary Fig.3
 
@@ -1754,7 +2307,7 @@ stacked<-ggplot(df_avg, aes(x = Face_site, y = Mean_abundance, fill = Taxon)) +
 
 
 ```{r}
-ggsave("../figures/supplementary/suppl_fig3.png",
+ggsave("../figures/supplementary/suppl_fig4.png",
        stacked,
        width = 9, height = 5, dpi = 300)
 ```
@@ -2012,14 +2565,12 @@ data_final <- data
 ```{r}
 # Calculate Total Ion Count (TIC)
 
-
 data_TIC <- data.frame(TIC = rowSums(data_final %>% column_to_rownames("SampleID"))) %>% 
   rownames_to_column("SampleID") %>%
   left_join(
     metadata_with_runorder %>% select(filename_2, Order, Subject_ID),
     by = c("SampleID" = "filename_2")
   )
-
 
 ```
 
@@ -2745,7 +3296,13 @@ data_sample_filtered <- data_sample %>%
   filter(SampleID %in% metadata_filtered$filename_2)
 
 # CLR transformation on filtered data
-data_sample_clr <- decostand(data_sample_filtered %>% column_to_rownames("SampleID"), method = "rclr")
+data_sample_clr <- decostand(data_sample_filtered %>% column_to_rownames("SampleID"), method = "rclr", impute = FALSE)
+
+
+
+data_sample_clr <- data_sample_clr %>%
+  mutate(across(everything(), ~ tidyr::replace_na(., 0)))
+sum(is.na(data_sample_clr))
 
 # Run PCA
 PCA_whole <- mixOmics::pca(data_sample_clr, ncomp = 2, center = TRUE, scale = TRUE)
@@ -2804,16 +3361,29 @@ anova(disper_donor)
 permanova <- adonis2(dist_metabolites ~ PCA_whole_scores$Subject_ID + PCA_whole_scores$Face_site, PCA_whole_scores, na.action = na.omit, by="margin")
 ```
 
+```{r}
+permanova_sebum <- adonis2(
+  dist_metabolites ~ PCA_whole_scores$Subject_ID + 
+                     PCA_whole_scores$sebum + 
+                     PCA_whole_scores$Face_site,
+  data      = PCA_whole_scores,
+  na.action = na.omit,
+  by        = "margin"
+)
+```
+
+
 # plot with Permanova
 
 ```{r}
-face_row <- permanova[2, ]
+#face_row <- permanova[2, ]
+face_row <- permanova_sebum[3, ]
 r2 <- round(face_row$R2 * 100, 1)
 f_val <- round(face_row$F, 2)
 p_val <- format(face_row$`Pr(>F)`, digits = 3, scientific = TRUE)
 
-label_text <- paste0("PERMANOVA\nR² = ", r2, "%\nF = ", f_val, "\np = ", p_val)
-
+#label_text <- paste0("PERMANOVA\nR² = ", r2, "%\nF = ", f_val, "\np = ", p_val)
+label_text <- paste0("PERMANOVA\n(corrected for Subject_ID and Sebum)\nR\u00B2 = ", r2, "%\nF = ", f_val, "\np = ", p_val)
 ```
 
 ```{r}
@@ -2919,16 +3489,16 @@ PCA_plot_subject <- ggplot(PCA_whole_scores, aes(x = PC1, y = PC2, color = !!sym
   ) +
   theme_classic(base_size = 12) +
   theme(legend.position = "none")
-
+print(PCA_plot_subject)
 ```
 
 ```{r}
 # 3. Save the full layout
-ggsave("../figures/supplementary/suppl_fig10.png",
+ggsave("../figures/supplementary/suppl_fig11.png",
        plot = PCA_plot_subject,
        width = 9, height = 9, dpi = 300)
 
-ggsave("../figures/supplementary/suppl_fig10.svg",
+ggsave("../figures/supplementary/suppl_fig11.svg",
        plot = PCA_plot_subject,
        width = 9, height = 9)
 ```
@@ -2954,7 +3524,10 @@ metadata_with_runorder <- metadata_with_runorder %>%
 
 ```{r}
 # RCLR transformation
-data_sample_clr <- decostand(data_sample %>% column_to_rownames("SampleID"), method = "rclr")
+data_sample_clr <- decostand(data_sample_filtered %>% column_to_rownames("SampleID"), method = "rclr", impute=FALSE)
+
+data_sample_clr <- data_sample_clr %>%
+  mutate(across(everything(), ~ tidyr::replace_na(., 0)))
 ```
 
 ```{r}
@@ -3025,14 +3598,15 @@ permanova_sebumgroup <- adonis2(dist_metabolites ~ PCA_whole_scores$Subject_ID +
 ```
 
 
+
 ```{r}
 sebum_row <- permanova_sebumgroup[2, ]
 r2 <- round(sebum_row$R2 * 100, 1)
 f_val <- round(sebum_row$F, 2)
 p_val <- format(sebum_row$`Pr(>F)`, digits = 3, scientific = TRUE)
 
-label_text <- paste0("PERMANOVA\nR² = ", r2, "%\nF = ", f_val, "\np = ", p_val)
-
+#label_text <- paste0("PERMANOVA\n (corrected for Subject_ID)\n R² = ", r2, "%\nF = ", f_val, "\np = ", p_val)
+label_text <- paste0("PERMANOVA\n(corrected for Subject_ID)\nR\u00B2 = ", r2, "%\nF = ", f_val, "\np = ", p_val)
 ```
 
 #Plot with Permanova
@@ -3152,6 +3726,386 @@ PCA_plot_sebum <- PCA_whole_scores %>%
 
 ```
 
+# with age 
+```{r}
+# ── PERMANOVA 1: with Subject_ID (correct repeated-measures model) ────────────
+#permanova_age_subject <- adonis2(
+#  dist_metabolites ~ PCA_whole_scores$Subject_ID + PCA_whole_scores$age_group,
+#  PCA_whole_scores, na.action = na.omit, by = "margin"
+#)
+#print(permanova_age_subject)
+# Expected: age_group Df = 0 — completely absorbed by Subject_ID
+
+# ── PERMANOVA 2: with Face_site only (between-subject test) ───────────────────
+#permanova_age_facesite <- adonis2(
+#  dist_metabolites ~ PCA_whole_scores$Face_site + PCA_whole_scores$age_group,
+#  PCA_whole_scores, na.action = na.omit, by = "margin"
+#)
+#print(permanova_age_facesite)
+# Expected: age_group significant but inflated by inter-individual variance
+
+# ── PERMANOVA 3: permutation check with random labels ────────────────────────
+#set.seed(123)
+#PCA_whole_scores$random_group <- sample(
+#  PCA_whole_scores$age_group,
+#  nrow(PCA_whole_scores),
+#  replace = FALSE
+#)
+
+#permanova_random <- adonis2(
+#  dist_metabolites ~ PCA_whole_scores$Face_site + PCA_whole_scores$random_group,
+#  PCA_whole_scores, na.action = na.omit, by = "margin"
+#)
+#print(permanova_random)
+# Random R² = 0.3%, p = 0.580 → age grouping is not random noise,
+# but effect is still confounded with Subject_ID
+
+# ── Extract PERMANOVA 2 stats for annotation ──────────────────────────────────
+#age_row    <- permanova_age_subject[2, ]
+#r2_age     <- round(age_row$R2 * 100, 1)
+#f_age      <- round(age_row$F, 2)
+#p_age      <- format(age_row$`Pr(>F)`, digits = 3, scientific = TRUE)
+
+# Note in annotation that subject correction removes the effect
+#label_text_age <- paste0(
+#  "PERMANOVA \n",
+#  "R² = ", r2_age, "%, F = ", f_age, ", p = ", p_age, "\n"
+#)
+
+# ── Legend labels with n ──────────────────────────────────────────────────────
+#age_group_counts_df <- PCA_whole_scores %>%
+#  filter(!is.na(age_group)) %>%
+#  count(age_group) %>%
+#  mutate(label = paste0(age_group, " (n = ", n, ")"))
+
+#age_group_labels <- setNames(
+#  age_group_counts_df$label,
+#  age_group_counts_df$age_group
+#)
+
+#PCA_whole_scores$age_group <- factor(
+#  PCA_whole_scores$age_group,
+#  levels = c("20–29", "30–39", "40+")
+#)
+
+# ── PCA plot coloured by age_group ────────────────────────────────────────────
+#PCA_plot_age <- PCA_whole_scores %>%
+#  ggplot(aes(x = PC1, y = PC2, fill = age_group, color = age_group)) +
+#  geom_point(shape = 21, size = 3, stroke = 0.6, alpha = 0.6) +
+#  geom_point(
+#    data = PCA_whole_scores %>%
+#      filter(!is.na(age_group)) %>%
+#      group_by(age_group) %>%
+#      summarise(across(matches("PC"), mean), .groups = "drop"),
+#    aes(x = PC1, y = PC2, fill = age_group, color = age_group),
+#    shape = 8, size = 4, inherit.aes = FALSE
+#  ) +
+#  scale_fill_manual(
+#    name   = "Age Group",
+#    values = c("20–29" = "#74add1", "30–39" = "#fee090", "40+" = "#f46d43"),
+#    labels = age_group_labels
+#  ) +
+#  scale_color_manual(
+#    name   = "Age Group",
+#    values = c("20–29" = "#74add1", "30–39" = "#fee090", "40+" = "#f46d43"),
+#    labels = age_group_labels
+#  ) +
+# labs(
+#    title = "PCA of RCLR-Transformed Untargeted Metabolite Features by Age Group",
+#    x     = paste0("PC1 (", round(PCA_whole$prop_expl_var$X[1] * 100, 1), "%)"),
+#    y     = paste0("PC2 (", round(PCA_whole$prop_expl_var$X[2] * 100, 1), "%)")
+#  ) +
+#  coord_fixed() +
+#  theme_classic(base_size = 10) +
+#  theme(
+#    axis.title   = element_text(size = 12),
+#    axis.text    = element_text(size = 11),
+#    plot.title   = element_text(size = 15),
+#    legend.title = element_text(size = 12),
+#    legend.text  = element_text(size = 11)
+#  ) +
+#  annotate("text",
+#    x = Inf, y = Inf,
+#    label = label_text_age,
+#    hjust = 1.1, vjust = 1.2, size = 3.5
+#  )
+
+# ── Combine with sebum PCA ────────────────────────────────────────────────────
+#Fig_metabolomics_age <- ggarrange(
+#  PCA_plot_sebum, PCA_plot_age,
+#  ncol          = 2,
+#  labels        = c("a", "b"),
+#  font.label    = list(size = 18, face = "bold"),
+#  common.legend = FALSE,
+#  legend        = "bottom"
+#)
+```
+
+
+```{r}
+#ggsave("../figures/rebuttal/Figure_metabolomics_age_sebum_PCA.png",
+#       plot = Fig_metabolomics_age, width = 14, height = 6, dpi = 300)
+#ggsave("../figures/rebuttal/Figure_metabolomics_age_sebum_PCA.svg",
+#       plot = Fig_metabolomics_age, width = 14, height = 6)
+```
+
+```{r}
+#library(cowplot)
+
+# ── Row 1: age vs sebum (scatter + boxplot) ───────────────────────────────────
+#row1 <- plot_grid(
+#  Age_Sebum_Boxplot        + theme(legend.position = "none"),
+#  Age_Sebum_LMM_stratified + theme(legend.position = "none"),
+#  ncol           = 2,
+#  align          = "hv",
+#  axis           = "tblr",
+#  labels         = c("a", "b"),
+#  label_size     = 18,
+#  label_fontface = "bold",
+#  rel_widths     = c(1, 1.5)
+#)
+
+# ── Row 2: heatmap (full width) ───────────────────────────────────────────────
+#row2 <- plot_grid(
+#  heatmap_transposed + theme(legend.position = "none"),
+#  ncol           = 1,
+#  labels         = "c",
+#  label_size     = 18,
+#  label_fontface = "bold"
+#)
+
+# ── Row 3: Shannon ~ age + PCA by age group ───────────────────────────────────
+#row3 <- plot_grid(
+#  Age_Shannon_LMM + theme(legend.position = "none"),
+#  PCA_plot_age    + theme(legend.position = "none"),
+#  ncol           = 2,
+#  align          = "hv",
+#  axis           = "tblr",
+#  labels         = c("d", "e"),
+#  label_size     = 18,
+#  label_fontface = "bold"
+#)
+
+# ── Extract legends ───────────────────────────────────────────────────────────
+# Row 1 has two different legends (Face Site for scatter, Age Group for boxplot)
+#legend_a <- get_legend(Age_Sebum_LMM_stratified + theme(legend.position = "bottom"))
+#legend_b <- get_legend(Age_Sebum_Boxplot         + theme(legend.position = "bottom"))
+#legend_row1 <- plot_grid(legend_a, legend_b, ncol = 2)
+
+# Row 2: heatmap legend
+#legend_row2 <- get_legend(heatmap_transposed + theme(legend.position = "bottom"))
+
+# Row 3: Face Site legend (shared between d and e is different — e has Age Group)
+#legend_d <- get_legend(Age_Shannon_LMM + theme(legend.position = "bottom"))
+#legend_e <- get_legend(PCA_plot_age    + theme(legend.position = "bottom"))
+#legend_row3 <- plot_grid(legend_d, legend_e, ncol = 2)
+
+# ── Stack everything ──────────────────────────────────────────────────────────
+#Fig_age_rebuttal <- plot_grid(
+#  row1,        legend_row1,
+#  row2,        legend_row2,
+#  row3,        legend_row3,
+#  ncol        = 1,
+#  rel_heights = c(1, 0.08,   # row 1 + its legend
+#                  1, 0.08,   # row 2 + its legend
+#                  1, 0.08),  # row 3 + its legend
+#  labels      = NULL         # labels already set per row above
+#)
+
+# ── Save ──────────────────────────────────────────────────────────────────────
+#ggsave("../figures/rebuttal/Figure_age_rebuttal.png",
+#       plot = Fig_age_rebuttal, width = 16, height = 18, dpi = 300)
+#ggsave("../figures/rebuttal/Figure_age_rebuttal.svg",
+#       plot = Fig_age_rebuttal, width = 16, height = 18)
+```
+
+
+# Supplementary Fig. 13
+
+```{r}
+# Calculate median sebum per Subject_ID
+subject_median_info <- metadata_with_runorder_clean %>%
+  group_by(Subject_ID) %>%
+  summarise(
+    median_sebum = median(sebum, na.rm = TRUE)
+  ) %>%
+  mutate(sebum_group_median = case_when(
+    median_sebum < low_thresh ~ "low",
+    median_sebum >= low_thresh & median_sebum <= high_thresh ~ "medium",
+    median_sebum > high_thresh ~ "high"
+  ))
+
+```
+
+```{r}
+# Merge back onto the sample-level metadata
+metadata_with_runorder_clean <- metadata_with_runorder_clean %>%
+  left_join(subject_median_info %>% select(Subject_ID, sebum_group_median), by = "Subject_ID")
+
+# Set factor levels manually so Low, Medium, High appear in the correct order
+metadata_with_runorder_clean$sebum_group_median <- factor(metadata_with_runorder_clean$sebum_group_median, 
+                                       levels = c("low", "medium", "high"))
+
+```
+
+```{r}
+make_vip_boxplots_by_subject <- function(vip_df, clr_data, metadata_df, output_prefix) {
+  plots <- list()
+
+  for (i in seq_len(nrow(vip_df))) {
+    metabolite <- as.character(vip_df$ID[i])
+    metabolite_name <- vip_df$Compound_Name_2[i]
+    mz_value <- round(vip_df$mz[i], 2)
+    rt_value <- round(vip_df$RT[i], 2)
+
+    # Merge in Subject_ID and sebum_group info
+    temp_data <- clr_data %>%
+      dplyr::select(Subject_ID, !!sym(metabolite)) %>%
+      left_join(metadata_df %>% select(Subject_ID, sebum_group_median), by = "Subject_ID") %>%
+      filter(!is.na(.data[[metabolite]]))
+    
+    temp_data <- temp_data %>%
+      mutate(
+        sebum_group_median = factor(sebum_group_median, levels = c("low", "medium", "high")),
+        Subject_ID = forcats::fct_reorder(Subject_ID, as.numeric(sebum_group_median))
+      )
+
+    y_max <- max(temp_data[[metabolite]], na.rm = TRUE)
+
+    p <- ggplot(temp_data, aes(x = Subject_ID, y = .data[[metabolite]], fill = sebum_group_median, color = sebum_group_median)) +
+      geom_boxplot(outlier.shape = NA, color = "black") +
+      geom_point(
+        pch = 21,
+        position = position_jitter(width = 0.3),
+        size = 1.5,
+        stroke = 0.3,
+        alpha = 0.6,
+        color = "black"
+      ) +
+      scale_fill_manual(
+        values = c("low" = "#4575b4", "medium" = "#fee0b6", "high" = "#e08214"),
+        name = "Sebum Group"
+      ) +
+      scale_color_manual(
+        values = c("low" = "#4575b4", "medium" = "#fee0b6", "high" = "#e08214"),
+        guide = "none"
+      ) +
+      labs(
+        y = paste0("rclr ", metabolite_name, "\n(m/z: ", mz_value, ", RT: ", rt_value, ")"),
+        x = "Subject ID",
+        title = metabolite_name
+      ) +
+      theme_bw() +
+      theme(
+        axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 12),
+        axis.title = element_text(size = 14),
+        plot.title = element_text(size = 15, hjust = 0.5),
+        legend.title = element_text(size = 13),
+        legend.text = element_text(size = 11),
+        panel.grid = element_blank()
+      ) +
+      stat_compare_means(
+        method = "kruskal.test",
+        label.x = 5,
+        label.y.npc = "top",
+        size = 4
+        )
+
+    plots[[length(plots) + 1]] <- p
+  }
+
+  return(plots)
+}
+
+```
+
+```{r}
+# First join metadata and filter to include only relevant face sites
+metadata_filtered <- metadata_with_runorder %>%
+  filter(Face_site %in% c("Forehead", "Nose", "Cheek"))
+
+# Then subset the data_sample accordingly
+data_sample_filtered <- data_sample %>%
+  filter(SampleID %in% metadata_filtered$filename_2)
+
+# CLR transformation on filtered data
+data_sample_clr <- decostand(data_sample_filtered %>% column_to_rownames("SampleID"), method = "rclr", impute=FALSE)
+
+
+data_sample_clr <- data_sample_clr %>%
+  mutate(across(everything(), ~ tidyr::replace_na(., 0)))
+
+```
+
+```{r}
+#added 07/08/2026
+q <- quantile(metadata_with_runorder_clean$sebum, probs = c(0.25, 0.75), na.rm = TRUE)
+low_thresh <- q[1]
+high_thresh <- q[2]
+
+# 2. Assign sebum groups
+metadata_with_runorder_clean <- metadata_with_runorder_clean %>%
+  mutate(sebum_group = case_when(
+    sebum < low_thresh ~ "low",
+    sebum >= low_thresh & sebum <= high_thresh ~ "medium",
+    sebum > high_thresh ~ "high"
+  ))
+
+```
+
+
+
+```{r}
+clr_long_subject <- data_sample_clr %>% #data_sample_extreme_clr 
+  as.data.frame() %>%
+  rownames_to_column("SampleID") %>%
+  left_join(metadata_with_runorder_clean %>% 
+              dplyr::select(filename_2, Subject_ID, sebum_group), #merge with sebum_group; not sebum_group_median
+            by = c("SampleID" = "filename_2")) %>%
+  rename(Subject_ID = Subject_ID, group = sebum_group)
+
+```
+
+```{r}
+vip_plots <- make_vip_boxplots_by_subject(VIPs_selected, clr_long_subject, metadata_with_runorder_clean)
+
+```
+
+
+
+```{r}
+
+
+library(ggpubr)
+
+# Select and arrange your desired plots
+final_figure <- ggarrange(
+  vip_plots[[1]], vip_plots[[4]], vip_plots[[3]], vip_plots[[8]],
+  vip_plots[[2]], vip_plots[[5]],  vip_plots[[6]], vip_plots[[7]],
+  ncol = 4, nrow = 2,
+  common.legend = TRUE,
+  legend = "bottom",
+  labels = c("A", "B", "C", "D", "E", "F", "G", "H"),
+  font.label = list(size = 16, face = "bold")
+)
+
+# Show it in the viewer
+print(final_figure)
+
+
+```
+```{r}
+# 3. Save the full layout
+ggsave("../figures/supplementary/suppl_fig14.png",
+       plot = final_figure,
+       width = 24, height = 8, dpi = 300)
+
+ggsave("../figures/supplementary/suppl_fig14.svg",
+       plot = final_figure,
+       width = 24, height = 8)
+
+```
 #Figure 4b
 ```{r}
 features_skin <- skin_feature_info %>% filter(Mean_skin > 0) %>% pull(Feature)
@@ -3177,6 +4131,7 @@ feature_lists <- list(
 ```
 
 ```{r}
+# adapted 
 library(eulerr)
 
 # Rename the lists
@@ -3210,12 +4165,38 @@ venn_plot <- plot(fit,
 #Overlap of Detected Features Across Sample Types
 ```
 
+
+```{r}
+library(eulerr)
+
+feature_lists_named <- feature_lists
+names(feature_lists_named) <- c(
+  "Skin",
+  "Personal Care Ref",
+  "Quality Control",
+  "Blank",
+  "Blank Swabs"
+)
+
+fit <- euler(feature_lists_named)
+
+venn_plot <- plot(fit,
+     fills = list(
+       fill = c("#daa600", "#c00001", "#bcbddc", "#2ca25f", "#247cb9"),
+       alpha = 0.8
+     ),
+     quantities = TRUE,
+     legend = list(title = "Sample type", cex = 1),
+     main = list(label = "Overlap of Untargeted Metabolite Features Across Sample Types", cex = 1.2)
+)
+```
+
 ```{r}
 venn_plot2 <- ggarrange(
   venn_plot, NULL,
   ncol = 2,
   nrow = 1,
-  labels = c("b", "c"),
+  labels = c("B", "C"),
   common.legend = FALSE ,font.label = list(size = 18, face = "bold"), align ="hv"  # adjust size and style
 )
 ```
@@ -3227,7 +4208,7 @@ venn_pca <- ggarrange(
   PCA_plot_Face_site, PCA_plot_sebum, 
   ncol = 2,
   nrow = 1,
-  labels = c("d", "e"),
+  labels = c("D", "E"),
   common.legend = FALSE ,font.label = list(size = 18, face = "bold"), align ="hv"  # adjust size and style
 )
 ```
@@ -3235,7 +4216,7 @@ venn_pca <- ggarrange(
 ```{r}
 top_grid <- ggarrange(heatmap_transposed,venn_plot2, venn_pca,
   ncol = 1, nrow = 3,
-  labels = c("a", "", ""), # no label on boxplot_fg as it already has f/g inside
+  labels = c("A", "", ""), # no label on boxplot_fg as it already has f/g inside
   heights = c(0.85,1, 1),font.label = list(size = 18, face = "bold")  # adjust size and style
   # optional: give a bit more room to the bottom row
 )
@@ -3243,11 +4224,11 @@ top_grid <- ggarrange(heatmap_transposed,venn_plot2, venn_pca,
 
 ```{r}
 # 3. Save the full layout
-ggsave("../figures/main/Figure4.png", #venn_sebum_3.png
+ggsave("../figures/main/Figure4_rebuttal_2.png", #venn_sebum_3.png
        plot = top_grid,
        width = 16, height = 16, dpi = 300)
 
-ggsave("../figures/main/Figure4.svg", #venn_sebum_3.svg
+ggsave("../figures/main/Figure4_rebuttal_2.svg", #venn_sebum_3.svg
        plot = top_grid,
        width = 16, height = 16)
 ```
@@ -3327,7 +4308,11 @@ high_n <- extreme_sebum_counts %>% filter(Extreme_Sebum == "High") %>% pull(n)
 
 ```{r}
 # RCLR transformation
-data_sample_extreme_clr <- decostand(data_sample_extreme %>% column_to_rownames("SampleID"), method = "rclr")
+data_sample_extreme_clr <- decostand(data_sample_extreme %>% column_to_rownames("SampleID"), method = "rclr", impute=FALSE)
+
+
+data_sample_extreme_clr <- data_sample_extreme_clr %>%
+  mutate(across(everything(), ~ tidyr::replace_na(., 0)))
 ```
 ```{r}
 # PCA
@@ -3360,6 +4345,7 @@ medium_n <-  sebum_counts %>% filter(Extreme_Sebum == "Medium") %>% pull(n)
 high_n <- sebum_counts %>% filter(Extreme_Sebum == "High") %>% pull(n)
 ```
 
+
 ```{r}
 # PERMANOVA
 dist_metabolites <- vegdist(data_sample_extreme_clr, method = "euclidean")
@@ -3369,14 +4355,14 @@ disper_donor <- betadisper(dist_metabolites, PCA_whole_scores$Subject_ID)
 anova(disper_donor)
 permanova_sebumgroup <- adonis2(dist_metabolites ~ PCA_whole_scores$Subject_ID + PCA_whole_scores$Extreme_Sebum, PCA_whole_scores, na.action = na.omit, by="margin")
 ```
-
+HERE
 ```{r}
 sebum_row <- permanova_sebumgroup[2, ]
 r2 <- round(sebum_row$R2 * 100, 1)
 f_val <- round(sebum_row$F, 2)
 p_val <- format(sebum_row$`Pr(>F)`, digits = 3, scientific = TRUE)
 
-label_text <- paste0("PERMANOVA\nR² = ", r2, "%\nF = ", f_val, "\np = ", p_val)
+label_text <- paste0("PERMANOVA\n(corrected for Subject_ID)\nR\u00B2 = ", r2, "%\nF = ", f_val, "\np = ", p_val)
 
 ```
 
@@ -3487,9 +4473,12 @@ perf_PLSDA_extreme <- perf(PLSDA_extreme, validation = "Mfold", folds =5, nrepea
 plot(perf_PLSDA_extreme, legend = FALSE)
 ```
 
+
+
+
 ```{r}
 
-png("../figures/supplementary/suppl_fig11.png", res = 300, width = 5, height = 5, units = "in")
+png("../figures/supplementary/suppl_fig12.png", res = 300, width = 5, height = 5, units = "in")
  
 # Generate the PLS-DA performance plot
 plot(perf_PLSDA_extreme)
@@ -3659,9 +4648,13 @@ data_sample_class_sum <- data_sample_class_long %>%
 # Step 4: rclr transformation
 data_sample_class_sum_clr <- data_sample_class_sum %>%
   column_to_rownames("SampleID") %>%
-  decostand(method = "rclr") %>%
+  decostand(method = "rclr", impute=FALSE) %>%
   as.data.frame() %>%
   rownames_to_column("SampleID")
+
+
+data_sample_class_sum_clr <- data_sample_class_sum_clr %>%
+  mutate(across(everything(), ~ tidyr::replace_na(., 0)))
 
 # Step 5: Merge with metadata 
 clr_long_subject <- data_sample_class_sum_clr %>%
@@ -3769,6 +4762,8 @@ selected_classes <- c(
 
 # Colors
 colors <- c("low" = "#4575b4", "medium" = "#fee0b6", "high" = "#e08214")
+
+
 
 # Prepare long-format data
 clr_long_plot_df <- clr_long_subject %>%
@@ -3903,6 +4898,8 @@ selected_classes <- c(
 )
 colors <- c("low" = "#4575b4", "medium" = "#fee0b6", "high" = "#e08214")
 
+
+
 # Prepare long-format data
 clr_long_plot_df <- clr_long_subject %>%
   select(SampleID, Subject_ID, group, all_of(selected_classes)) %>%
@@ -3938,7 +4935,7 @@ lmm_pval_df <- purrr::map_dfr(selected_classes, function(class_name) {
       Adj_p <= 0.001 ~ "***",
       Adj_p <= 0.01 ~ "**",
       Adj_p <= 0.05 ~ "*",
-      TRUE ~ "ns"
+      TRUE ~ "" #"ns"
     ),
     Label = paste0(Significance, " p = ", signif(Adj_p, 2), "\n"),
     class_index = match(Class, selected_classes),
@@ -4024,7 +5021,10 @@ supp_comparison_df <- pval_df_clean %>%
 
 # View or export
 print(supp_comparison_df)
+```
 
+
+```{r}
 write.csv(supp_comparison_df, "../output/Supplementary_Wilcoxon_vs_LMM_pvals_classes.csv", row.names = FALSE)
 
 ```
@@ -4035,6 +5035,18 @@ selected_ids <- c(2314,1744, 2069, 1883, 2409, 2509, 2287, 2160)
 VIPs_selected <- VIPs_anno %>% filter(ID %in% selected_ids)
 VIPs_remaining <- VIPs_anno %>% filter(!(ID %in% selected_ids))
 ```
+```{r}
+VIPs_selected <- VIPs_selected %>%
+  mutate(Compound_Name_2 = case_when(
+    Compound_Name_2 == "Monoelaidin"          ~ "Glycerol-C18:1",
+    Compound_Name_2 == "Glycerol 1-myristate" ~ "Glycerol-C14:0",
+    Compound_Name_2 == "Monopalmitolein (9c)"      ~ "Glycerol-C16:1",
+    Compound_Name_2 == "Monoelaidin"          ~ "Glycerol-C18:1",
+    Compound_Name_2 == "Alanine/Sarcosine-C15:0" ~ "Ala/Sar-C15:0",
+    TRUE ~ Compound_Name_2
+  ))
+```
+
 
 ```{r}
 clr_long_subject <- data_sample_clr %>% #data_sample_extreme_clr 
@@ -4045,6 +5057,17 @@ clr_long_subject <- data_sample_clr %>% #data_sample_extreme_clr
             by = c("SampleID" = "filename_2")) %>%
   rename(Subject_ID = Subject_ID, group = sebum_group)
 
+```
+```{r}
+# Recompute n counts from the correct (3-group) clr_long_subject table
+sebum_counts_3group <- clr_long_subject %>%
+  filter(!is.na(group)) %>%
+  count(group) %>%
+  rename(Extreme_Sebum = group)
+
+low_n    <- sebum_counts_3group %>% filter(Extreme_Sebum == "low")    %>% pull(n)
+medium_n <- sebum_counts_3group %>% filter(Extreme_Sebum == "medium") %>% pull(n)
+high_n   <- sebum_counts_3group %>% filter(Extreme_Sebum == "high")   %>% pull(n)
 ```
 
 ```{r}
@@ -4113,7 +5136,7 @@ make_grouped_vip_boxplots_return_lmm <- function(vip_df, clr_data, canopus_df) {
             p.value < 0.001 ~ "***",
             p.value < 0.01  ~ "**",
             p.value < 0.05  ~ "*",
-            TRUE            ~ "ns"
+            TRUE            ~ ""#"ns"
           ),
           label = paste0(signif, " p = ", formatC(p.value, format = "e", digits = 2)),
           x = match(Group1, levels(temp_data$group)),
@@ -4200,7 +5223,7 @@ final_figure_lmm <- ggarrange(
   vip_plots_list_lmm$plots[[1]], vip_plots_list_lmm$plots[[4]], vip_plots_list_lmm$plots[[3]], vip_plots_list_lmm$plots[[8]],
   vip_plots_list_lmm$plots[[2]], vip_plots_list_lmm$plots[[5]], vip_plots_list_lmm$plots[[6]], vip_plots_list_lmm$plots[[7]],
   ncol = 4, nrow = 2,
-  labels = c("d", "e", "f", "g", "h", "i", "j", "k"),
+  labels = c("D", "E", "F", "G", "H", "I", "J", "K"),
   font.label = list(size = 16, face = "bold")
 )
 
@@ -4209,7 +5232,7 @@ print(final_figure_lmm)
 
 ```
 ```{r}
-PCA_PLSDA2 <- ggarrange(PCA_plot_sebum_extreme, NULL, widths = c(1,1.5), labels = c("b", "c"), font.label = list(size = 16, face = "bold"), common.legend = TRUE, legend="bottom")
+PCA_PLSDA2 <- ggarrange(PCA_plot_sebum_extreme, NULL, widths = c(1,1.5), labels = c("B", "C"), font.label = list(size = 16, face = "bold"), common.legend = TRUE, legend="bottom")
 ```
 
 ```{r}
@@ -4217,8 +5240,8 @@ top_grid_lmm <- ggarrange(Figure5a_lmm,
   PCA_PLSDA2,
   final_figure_lmm,
   ncol = 1, nrow = 3,
-  labels = c("a", "", ""),
-  heights = c(1.25,1.25,3.5),
+  labels = c("A", "", ""),
+  heights = c(1.25,1.25,2.5),
   font.label = list(size = 16, face = "bold")
 )
 
@@ -4227,13 +5250,13 @@ top_grid_lmm <- ggarrange(Figure5a_lmm,
 
 ```{r}
 # 3. Save the full layout
-ggsave("../figures/main/Figure5a-k.png",
+ggsave("../figures/main/Figure5a-k_adjusted_07152026.png",
        plot = top_grid_lmm,
        width = 20, height = 16, dpi = 300)
 
-ggsave("../figures/main/Figure5a-k.svg",
+ggsave("../figures/main/Figure5a-k_adjusted_07152026.svg",
        plot = top_grid_lmm,
-       width = 20, height = 16)
+       width = 19, height = 16)
 ```
 
 
@@ -4308,7 +5331,7 @@ taxa_vars <- c("g__Staphylococcus", "f__Neisseriaceae", "g__Lawsonella", "g__Cor
                "g__Streptococcus", "g__Enhydrobacter", "g__Acinetobacter", "g__Xanthomonas", 
                "g__Haemophilus", "g__Paracoccus", "g__Pseudomonas", "g__Prevotella", 
                "g__Neisseria", "g__Veillonella", "g__Sphingomonas", "g__Lactobacillus", "g__Cutibacterium",
-               "shannon_entropy", "faith_pd")
+               "shannon_entropy")#, "faith_pd")
 
 # Define biophysical variables for y-axis
 x_vars <- c("water_content","TEWL_transepidermal_water_loss_",  "SC_protein", "sebum",  
@@ -4343,9 +5366,9 @@ x_axis_labels <- c(
   "g__Sphingomonas" = "Sphingomonas",
   "g__Lactobacillus" = "Lactobacillus",
   "g__Cutibacterium" = "Cutibacterium",
-  "shannon_entropy" = "Shannon Entropy",
-  "faith_pd" = "Faith PD"
-)
+  "shannon_entropy" = "Shannon Entropy")#,
+  #"faith_pd" = "Faith PD"
+#)
 
 y_axis_labels <- c(
   "L" = "Skin Brightness (L*)",
@@ -4490,11 +5513,11 @@ print(heatmap_genera)
 
 ```{r}
 # 3. Save the full layout
-ggsave("../figures/main/Figure6a.png",
+ggsave("../figures/main/Figure6a_withoutFaithPD.png",
        plot = heatmap_genera,
        width = 16, height = 9, dpi = 300)
 
-ggsave("../figures/main/Figure6a.svg",
+ggsave("../figures/main/Figure6a_withoutFaithPD.svg",
        plot = heatmap_genera,
        width = 16, height = 9)
 ```
@@ -4513,7 +5536,7 @@ library(rsvg)        # for SVG → PNG conversion
 
 ```{r}
 # Convert SVG to PNG (in-memory)
-svg_raster <- rsvg::rsvg_png("../figures/main/Figure6b.svg")
+svg_raster <- rsvg::rsvg_png("../figures/main/Figure6b_t2.svg")
 
 # Create raster grob from PNG
 svg_grob <- grid::rasterGrob(png::readPNG(svg_raster), interpolate = TRUE)
@@ -4522,11 +5545,11 @@ svg_grob <- grid::rasterGrob(png::readPNG(svg_raster), interpolate = TRUE)
 
 
 ```{r}
-label_a <- textGrob("a", x = unit(0, "npc"), y = unit(1, "npc"), just = c("left", "top"),
-                    gp = gpar(fontsize = 18, fontface = "bold"))
+label_a <- textGrob("A", x = unit(0, "npc"), y = unit(1, "npc"), just = c("left", "top"),
+                    gp = gpar(fontsize = 25, fontface = "bold"))
 
-label_b <- textGrob("b", x = unit(0, "npc"), y = unit(1, "npc"), just = c("left", "top"),
-                    gp = gpar(fontsize = 18, fontface = "bold"))
+label_b <- textGrob("B", x = unit(0, "npc"), y = unit(1, "npc"), just = c("left", "top"),
+                    gp = gpar(fontsize = 25, fontface = "bold"))
 
 # Add labels to the plots
 plot_a_labeled <- arrangeGrob(heatmap_genera, top = label_a)
@@ -4538,7 +5561,16 @@ Figure6 <- grid.arrange(plot_a_labeled, plot_b_labeled, nrow = 2)
 
 ```
 ```{r}
-ggsave("../figures/metadata/Figure6.svg",
+Figure6 <- grid.arrange(
+    plot_a_labeled,
+    plot_b_labeled,
+    nrow = 2,
+    heights = c(1, 1.5)
+)
+```
+
+```{r}
+ggsave("../figures/main/Figure6_t5.svg",
        plot = Figure6,
        width = 16, height = 18)
 ```
